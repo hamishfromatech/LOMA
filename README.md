@@ -1,19 +1,18 @@
 # LOMA — Local Offline Mini Assistant
 
-A complete voice agent that runs on your own machine with **no network access at
-runtime**, on a **128k context window**, in about **1.7 GB of RAM**.
+A complete voice assistant that runs on your own machine with **no network
+access at runtime**, on a **128k context window**, in about **1.7 GB of RAM** —
+with a chat UI, persistent conversations, MCP tools and a long-term memory kept
+in plain Markdown.
 
 It listens through your microphone, transcribes on CPU, routes with a
 deterministic lexicon and a 35 MB tool-calling model, optionally calls a real
 tool over MCP, answers with a 0.8B language model, and speaks the reply out loud.
 
-Built as a teaching project: every stage is a small, readable module you can run
-on its own.
-
 ```
 you ──► faster-whisper ──► control lexicon ──► Needle 3 ──► qwen3.5 ──► phonon ──► you
          (ears)            stop / reset /       (which tool,   (words)     (mouth)
-                           repeat / exit         which args)
+                           remember / exit       which args)
 ```
 
 ---
@@ -22,10 +21,11 @@ you ──► faster-whisper ──► control lexicon ──► Needle 3 ──
 
 | Problem | What LOMA does |
 |---|---|
-| Control words must never be misheard | **"Stop", "start over", "say that again", "goodbye" are matched by a lexicon**, not a model. 22 µs, zero RAM, no misreads — a 0.8B decision model got "stop" vs "exit" wrong 48% of the time |
+| Control words must never be misheard | **"Stop", "start over", "say that again", "remember that…"** are matched by a lexicon, not a model. 22 µs, zero RAM, no misreads — a 0.8B decision model got "stop" vs "exit" wrong 48% of the time |
 | Tool schemas blow up the prompt | **Needle 3** (35 MB) picks the tool and fills the arguments with a grammar-constrained decoder. No tool schema reaches the LLM, and there is no second LLM pass to extract arguments |
-| Conversations outgrow the window | **Auto-compaction** folds old turns into a summary, driven by Ollama's real `prompt_eval_count`, and caps *live* tokens at 8k so the window is a ceiling, not a mandate |
-| Voice agents feel laggy | Sentences are spoken **while the model is still writing** the rest of the answer |
+| Conversations outgrow the window | **Auto-compaction** folds old turns into a summary, driven by Ollama's real `prompt_eval_count`, and caps *live* tokens at 8k |
+| Assistants forget you between chats | **Long-term memory in `MEMORY.md`** — a Markdown file LOMA reads every turn and appends to when it learns something durable |
+| Voice agents feel laggy | Sentences are spoken **while the model is still writing**, and the browser plays them as they arrive |
 
 ---
 
@@ -43,46 +43,38 @@ On an 8 GB Apple M2, with a 128k context window:
 | Orchestration | Python + numpy | 77 MB |
 | **Total** | | **1692 MB** |
 
-That is **1.4 GB of headroom** against the 3 GB target. The LLM is now 88% of
-the footprint; everything that makes routing decisions is under 50 MB.
-
-Two things make a 128k window affordable:
-
-1. **A hybrid-attention model.** Qwen 3.5 keeps a full KV cache on only every
-   fourth layer.
-2. **Compaction caps *used* tokens at 8k**, not 128k.
-
-On a machine with **more than 8 GB**, LOMA automatically configures **256k**.
-
-Full detail, including how to re-measure on your own box: [`docs/RAM_BUDGET.md`](docs/RAM_BUDGET.md).
-
-### Latency (8 GB M2, warm)
-
-| Stage | Time |
-|---|---|
-| Control phrase match | 0.02 ms |
-| Tool routing + argument filling (Needle) | ~60 ms |
-| Whisper tiny, 3 s utterance | ~150–400 ms |
-| First LLM token | ~0.4 s |
-| First audio out | ~0.6 s |
-| Full turn | ~0.45 s text / ~0.8 s voice |
+Full detail, including how to re-measure: [`docs/RAM_BUDGET.md`](docs/RAM_BUDGET.md).
+On a machine with **more than 8 GB**, the window becomes **256k** automatically.
 
 ---
 
 ## Quickstart
 
-Requires Python 3.10+ and [Ollama](https://ollama.com/download) 0.40.9+.
+Requires Python 3.10+, [Ollama](https://ollama.com/download) 0.40.9+, and
+Node 20+ for the web UI.
 
 ```bash
-git clone <your-fork> loma
-cd loma
+git clone https://github.com/hamishfromatech/LOMA.git
+cd LOMA
 ./scripts/setup.sh
 ```
 
 The setup script creates a virtualenv, installs LOMA, pulls the two Ollama
-models, and caches Whisper's weights and Needle's engine/weights locally.
+models, and caches Whisper's weights and Needle's engine locally.
 
-Then:
+### The web app
+
+```bash
+# terminal 1 — the API (models load lazily on the first turn)
+.venv/bin/python -m server.app          # http://127.0.0.1:5050
+
+# terminal 2 — the UI
+cd web
+npm install
+npm run dev                             # http://localhost:3000
+```
+
+### The terminal
 
 ```bash
 source .venv/bin/activate
@@ -103,54 +95,75 @@ loma speak "hello" -o hello.wav
 
 ---
 
-## Commands
+## The web app
 
-| Command | What it does |
-|---|---|
-| `loma listen` | The full loop: mic → speech → answer → speakers |
-| `loma ask "…"` | One text turn through the whole stack |
-| `loma route "…"` | Control match + Needle tool routing, no LLM (alias: `decide`) |
-| `loma tools` | List MCP tools |
-| `loma tools --probe "what time is it"` | Show how Needle would route a sentence |
-| `loma context` | Context window policy and compaction settings |
-| `loma transcribe file.wav` | Speech to text only |
-| `loma speak "hello"` | Text to speech only |
-| `loma doctor` | Check every dependency end to end |
-| `loma bench` | Measure latency and RAM against the budget |
-| `loma models` | What is currently loaded in memory |
-| `loma devices` | Audio devices (pick one with `LOMA_MIC_DEVICE`) |
+A ChatGPT/Open-WebUI-shaped interface built on
+[prompt-kit](https://www.prompt-kit.com) components over a Flask API.
 
-Add `-v` anywhere for debug logs.
+- **Icon rail + conversation drawer** — every chat is a JSON file, grouped by
+  Today / Yesterday / Previous 7 days, searchable, renameable, deletable.
+- **One composer** — model picker, voice toggle, microphone and a white send
+  button, matching Open WebUI's silhouette.
+- **Live tool cards** — `prompt-kit`'s `Tool` shows the call while it is running
+  and its output when it returns.
+- **Reasoning panel** — the route decision, the tool result and the timings for
+  every answer.
+- **Spoken replies** — Phonon generates one WAV per sentence during the stream;
+  the browser queues and plays them.
+- **Settings page** — language model, voice (with preview), MCP servers
+  (add/remove/reconnect), and a Markdown memory editor.
+
+### API
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/status` | models, RAM, context, tools |
+| `GET/POST` | `/api/conversations` | list / create |
+| `GET/PATCH/DELETE` | `/api/conversations/<id>` | open / rename / delete |
+| `POST` | `/api/conversations/<id>/chat` | one turn, Server-Sent Events |
+| `GET/PUT/DELETE` | `/api/memory` | read / write / clear `MEMORY.md` |
+| `POST` | `/api/transcribe` | audio → text (faster-whisper) |
+| `POST` | `/api/speak` | text → WAV (Phonon) |
+| `GET/POST` | `/api/settings` | current settings, available models and voices |
+| `GET/POST/DELETE` | `/api/mcp/…` | inspect and edit `mcp.json` |
+
+The chat stream emits `route`, `tool`, `tool_result`, `delta`, `audio`,
+`memory`, `done` and `error` events — the same iterator the CLI consumes, so
+there is only one implementation of a turn.
 
 ---
 
-## How a turn actually works
+## Long-term memory
 
-1. **Voice activity detection** trims the recording. A simple RMS gate — about
-   forty lines of numpy, no neural VAD — with a 300 ms preroll so the first
-   phoneme is never clipped.
-2. **faster-whisper** transcribes it. Tiny + int8 is ~80 MB and sub-second.
-3. **The control lexicon** checks whether the utterance is a known command after
-   stripping politeness fillers ("can you please stop" → `stop`). Exact match
-   against a phrase set, in 22 µs.
-4. **Fast actions skip the LLM entirely.** `repeat` replays the last answer from
-   memory; `reset` clears history; `exit` ends the session. Zero tokens.
-5. **Needle 3** reads the utterance against the MCP toolset and returns a call
-   with the arguments already filled. It refuses off-topic input with an empty
-   call list; LOMA then answers normally.
-6. **The LLM** answers with `qwen3.5:0.8b` at a 128k window, with the tool result
-   injected as a one-shot system note that is never persisted.
-7. **Phonon TTS** speaks each sentence as it completes, on a background thread,
-   while the model keeps generating.
+Memory is a Markdown file at `data/memory/MEMORY.md`:
 
-More detail, including the exact latency budget: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+```markdown
+# LOMA memory
+
+- Hamish lives in Mackay _(2026-10-25, auto)_
+- Prefers tea over coffee _(2026-10-25, user)_
+```
+
+It is read at the start of every turn and injected as a system note, so it can
+never be compacted away and never grows the conversation window.
+
+Facts arrive two ways:
+
+1. **Explicitly** — say *"remember that I prefer tea"*. The lexicon catches it
+   before any model runs.
+2. **Automatically** — after a turn, if the message contains first-person
+   language, the model is asked whether it heard something durable
+   (`LOMA_MEMORY_AUTO_EXTRACT`, on by default).
+
+The file is the interface: edit it by hand in the Settings page or in your
+editor. Duplicates are ignored.
 
 ---
 
 ## MCP tools
 
 LOMA speaks MCP through [FastMCP](https://gofastmcp.com). Servers live in
-`mcp.json` — the same shape Claude Desktop uses:
+`mcp.json`, in the same shape Claude Desktop uses:
 
 ```json
 {
@@ -163,31 +176,21 @@ LOMA speaks MCP through [FastMCP](https://gofastmcp.com). Servers live in
 }
 ```
 
-`${LOMA_ROOT}` and `${LOMA_PYTHON}` are expanded before the server starts, so
-the config works from any directory.
-
-A demo server ships in `examples/mcp_local_tools.py` with four offline tools —
-current time, a die roll, arithmetic, system stats. Try:
-
-```bash
-loma tools --probe "roll a d20"
-loma ask "what is 17 times 24?" --no-speak
-```
-
-Point `LOMA_MCP_CONFIG` at any other config to swap in your own servers.
+`${LOMA_ROOT}` and `${LOMA_PYTHON}` are expanded before the server starts. A demo
+server ships in `examples/mcp_local_tools.py` with four offline tools — time, a
+die roll, arithmetic, system stats — and the Settings page can add or remove
+servers without restarting.
 
 ### Tool design is the accuracy knob
 
-Needle reads your one-line description and each parameter's description. It does
-not guess from the function name. Two rules from the
-[Needle tool guide](https://cactuscompute.com/blog/designing-tools-for-needle)
+Needle reads your one-line description and each parameter's description. Two
+rules from the [Needle tool guide](https://cactuscompute.com/blog/designing-tools-for-needle)
 matter most:
 
-* **One tool per action.** A `roll_dice(sides, count)` tool got its two numbers
-  swapped; a `roll_die(sides)` tool is right every time.
-* **Document the arguments.** `count: how many dice; 'three dice' is 3` is worth
-  more than any model upgrade. FastMCP only emits parameter descriptions when
-  the docstring has an `Args:` section.
+- **One tool per action.** `roll_dice(sides, count)` swapped its two numbers;
+  `roll_die(sides)` is right every time.
+- **Document the arguments.** FastMCP only emits parameter descriptions when the
+  docstring has an `Args:` section, and Needle reads those.
 
 ---
 
@@ -199,34 +202,26 @@ compaction  = min(60% of window, 8192 live tokens)
 keep        = last 2 exchanges verbatim
 ```
 
-When the prompt crosses the threshold, the older half of the conversation is
-summarised by the language model into one system message. The summary is
-injected in place of the old turns, so the window shrinks without losing facts.
-
-Because the LLM reports `prompt_eval_count` on every call, compaction fires on
-the real number — the character heuristic is only a fallback before the first
-call.
-
-`loma context` shows the current policy; `LOMA_COMPACT_TARGET_TOKENS` controls
-how aggressively to compact.
+Compaction fires on Ollama's real `prompt_eval_count`, not a character guess.
+`loma context` shows the policy; `LOMA_COMPACT_TARGET_TOKENS` controls it.
 
 ---
 
-## Configuration
+## Commands
 
-Everything is environment-driven; see [`.env.example`](.env.example). The ones
-you are most likely to touch:
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `LOMA_LLM_MODEL` | `qwen3.5:0.8b` | The answering model |
-| `LOMA_TTS_MODEL` | `phonon` | The speaking model |
-| `LOMA_NUM_CTX` | `0` | `0` = pick 128k/256k from RAM |
-| `LOMA_CONTROL_ENABLED` | `true` | Deterministic control lexicon |
-| `LOMA_TOOL_MIN_CONFIDENCE` | `0.50` | Below this Needle's call is ignored |
-| `LOMA_COMPACT_TARGET_TOKENS` | `8192` | Live-token ceiling before compaction |
-| `LOMA_MCP_CONFIG` | `mcp.json` | MCP server config |
-| `LOMA_MEMORY_BUDGET_MB` | `3072` | Used by `loma bench` and the runtime guard |
+| Command | What it does |
+|---|---|
+| `loma listen` | The full voice loop |
+| `loma ask "…"` | One text turn through the whole stack |
+| `loma route "…"` | Control match + Needle routing, no LLM (alias `decide`) |
+| `loma tools [--probe "…"]` | List MCP tools / test the router |
+| `loma context` | Context window policy |
+| `loma transcribe file.wav` | Speech to text only |
+| `loma speak "hello"` | Text to speech only |
+| `loma doctor` | Check every dependency |
+| `loma bench` | Measure latency and RAM |
+| `loma models` | What is loaded in memory |
+| `loma devices` | Audio devices |
 
 ---
 
@@ -234,51 +229,53 @@ you are most likely to touch:
 
 ```
 src/loma/
-  config.py         typed, env-driven settings
-  context.py        128k/256k policy and token accounting
-  ollama_client.py  one HTTP client (chat, TTS)
-  stt.py            faster-whisper wrapper
-  audio.py          microphone, VAD, speaker thread
-  control.py        deterministic stop/reset/repeat/exit lexicon
-  tool_router.py    Needle 3 tool selection + argument filling
-  mcp_hub.py        FastMCP client bridge (sync over async)
-  agent.py          conversation state + auto-compaction
-  pipeline.py       the end-to-end turn
-  memory.py         RAM accounting
-  cli.py            the `loma` command
-examples/           a demo MCP server
-scripts/            setup, model download, memory benchmark
-tests/              109 tests, no network required
-docs/               architecture, RAM, student labs, troubleshooting
+  config.py          typed, env-driven settings
+  context.py         128k/256k policy and token accounting
+  ollama_client.py   one HTTP client (chat, voices, models, TTS)
+  stt.py             faster-whisper wrapper
+  audio.py           microphone, VAD, speaker thread
+  control.py         deterministic stop/reset/repeat/remember/exit lexicon
+  tool_router.py     Needle 3 tool selection + argument filling
+  mcp_hub.py         FastMCP client bridge (sync over async)
+  agent.py           conversation state + auto-compaction
+  pipeline.py        the end-to-end turn, as an event stream
+  conversations.py   chat history on disk
+  memory_store.py    MEMORY.md
+  preferences.py     what the Settings page persists
+  memory.py          RAM accounting
+  cli.py             the `loma` command
+server/              Flask API
+web/                 Next.js + prompt-kit UI
+examples/            a demo MCP server
+scripts/             setup, model download, memory benchmark
+tests/               135 tests, no network required
+docs/                architecture, RAM, student labs, troubleshooting
 ```
 
 ---
 
 ## Learning path
 
-The repo is arranged so you can pull it apart one layer at a time:
+Pull it apart one layer at a time:
 
 1. `loma speak "hello"` → the TTS HTTP call, nothing else.
 2. `loma transcribe sample.wav` → Whisper, nothing else.
-3. `loma route "stop talking"` → the control lexicon, no model at all.
-4. `loma tools --probe "..."` → Needle's tool choice and confidence.
-5. `loma ask "..." --no-speak` → the full text pipeline.
+3. `loma route "stop talking"` → the lexicon, no model at all.
+4. `loma tools --probe "…"` → Needle's tool choice and confidence.
+5. `loma ask "…" --no-speak` → the full text pipeline.
 6. `loma listen` → add the microphone and speakers.
+7. `npm run dev` → the browser version of the same turn.
 
-[`docs/STUDENT_GUIDE.md`](docs/STUDENT_GUIDE.md) has exercises for each stage,
-including how to prove the lexicon beats a model on control phrases, and how to
-tune the tool confidence floor.
+[`docs/STUDENT_GUIDE.md`](docs/STUDENT_GUIDE.md) has exercises for each stage.
 
 ---
 
 ## Tests
 
 ```bash
-make test    # 109 tests, no network, no models required
+make test    # 135 tests, no network, no models required
 make lint
 ```
-
----
 
 ## License
 

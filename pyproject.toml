@@ -29,6 +29,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.5"]
+web = ["flask>=3.0"]
 
 [project.scripts]
 loma = "loma.cli:main"

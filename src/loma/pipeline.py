@@ -5,7 +5,7 @@ One turn is:
     microphone -> VAD -> faster-whisper -> control lexicon
                                           |-> fast action (no LLM)
                                           `-> Needle 3 -> MCP tools
-                                                          `-> LLM -> Phonon -> speakers
+                                                          `-> LLM -> TTS
 
 Four ideas keep this small and fast enough for a laptop:
 
@@ -19,10 +19,14 @@ Four ideas keep this small and fast enough for a laptop:
    thread.
 4. **Compaction caps live context**, so a 128k window does not turn into a 3 GB
    KV cache.
+
+`stream_events()` is the single turn implementation. The CLI wrappers and the
+Flask API both consume it, so there is only one place where a turn is defined.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import time
@@ -33,12 +37,20 @@ from pathlib import Path
 import numpy as np
 
 from loma.agent import Agent, Compaction
-from loma.audio import Microphone, Speaker, UtteranceRecorder, VadConfig, write_wav
+from loma.audio import (
+    Microphone,
+    Speaker,
+    UtteranceRecorder,
+    VadConfig,
+    play_pcm,
+    write_wav,
+)
 from loma.chunking import SentenceChunker
 from loma.config import Settings
 from loma.control import ControlMatch, ControlRouter
 from loma.mcp_hub import MCPHub, ToolBatch, ToolCall, load_mcp_config
 from loma.memory import MemoryGuard
+from loma.memory_store import MemoryStore
 from loma.ollama_client import OllamaClient
 from loma.stt import Transcriber, Transcript
 from loma.tool_router import NeedleRouter, ToolRoute
@@ -119,6 +131,8 @@ class VoicePipeline:
         self._tools_ready = False
         self.last_tool_route: ToolRoute | None = None
         self.last_reply = ""
+        #: Long-term memory, injected into every turn. Set by the caller.
+        self.memory: MemoryStore | None = None
 
     # -- lifecycle -----------------------------------------------------
     def close(self) -> None:
@@ -144,6 +158,19 @@ class VoicePipeline:
             return False
         return self.tool_router.load(self.hub.tools)
 
+    def reload_tools(self) -> bool:
+        """Re-read mcp.json and reconnect. Used by the Settings page."""
+        self.tool_router.close()
+        self.hub.stop()
+        self._tools_ready = False
+        config = (
+            load_mcp_config(self.settings.mcp_config)
+            if self.settings.mcp_enabled
+            else None
+        )
+        self.hub = MCPHub(config, max_tools=self.settings.tool_max_tools)
+        return self.start_tools()
+
     def warm_up(self, *, speech: bool = True) -> None:
         """Load every model, and connect to MCP, before the user speaks."""
         if self.hub.configured:
@@ -165,7 +192,292 @@ class VoicePipeline:
         # Keep the warm-up out of the real conversation.
         self.agent.reset()
 
-    # -- text in, speech out -------------------------------------------
+    # ------------------------------------------------------------------
+    # The turn
+    # ------------------------------------------------------------------
+    def stream_events(
+        self,
+        user_text: str,
+        *,
+        speak: bool = True,
+        emit_audio: bool = False,
+        route: bool = True,
+        use_tools: bool = True,
+        think: bool = False,
+        tool_batch: ToolBatch | None = None,
+        audio_format: str = "wav",
+    ) -> Iterator[dict]:
+        """Run one turn and yield it as a stream of plain dicts.
+
+        Event types, in the order they can appear:
+
+            route        the control lexicon's verdict
+            tool         a tool call Needle chose, before execution
+            tool_result  what the tool returned
+            delta        a fragment of the reply
+            audio        one spoken sentence, base64 PCM
+            done         the final reply plus timings
+
+        The CLI and the HTTP API both consume this iterator.
+        """
+        started = time.perf_counter()
+        control = ControlMatch()
+
+        # -- 1. deterministic control phrases --------------------------
+        if route:
+            control = self.controls.match(user_text)
+            yield {
+                "type": "route",
+                "intent": control.intent,
+                "matched": control.matched,
+                "latency_ms": round(control.latency_s * 1000, 3),
+            }
+            # "remember …" needs somewhere to write; without memory it is just
+            # another thing to ask the model about.
+            handled = control.is_fast_action and not (
+                control.intent == "remember" and self.memory is None
+            )
+            if handled:
+                yield from self._fast_action_events(
+                    control,
+                    speak=speak,
+                    emit_audio=emit_audio,
+                    started=started,
+                    audio_format=audio_format,
+                )
+                return
+
+        # -- 2. tools ---------------------------------------------------
+        if use_tools and tool_batch is None:
+            batch = yield from self._tool_events(user_text)
+        else:
+            batch = tool_batch
+
+        # -- 3. the language model -------------------------------------
+        if self.memory is not None:
+            self.agent.memory_context = self.memory.as_context()
+        else:
+            self.agent.memory_context = ""
+        chunker = SentenceChunker()
+        speaker = (
+            Speaker(self._tts_stream(None), sample_rate=self.settings.tts_sample_rate)
+            if speak
+            else None
+        )
+        parts: list[str] = []
+        first_token = 0.0
+        first_audio = 0.0
+        extra_context = batch.as_prompt() if batch and batch.calls else None
+
+        try:
+            for delta in self.agent.respond(user_text, think=think, extra_context=extra_context):
+                if not first_token:
+                    first_token = time.perf_counter() - started
+                parts.append(delta)
+                yield {"type": "delta", "text": delta}
+
+                for sentence in chunker.push(delta):
+                    if not first_audio:
+                        first_audio = time.perf_counter() - started
+                    if speaker:
+                        speaker.say(sentence)
+                    if emit_audio:
+                        yield self._audio_event(sentence, audio_format)
+
+            for sentence in chunker.flush():
+                if not first_audio:
+                    first_audio = time.perf_counter() - started
+                if speaker:
+                    speaker.say(sentence)
+                if emit_audio:
+                    yield self._audio_event(sentence, audio_format)
+
+            if speaker:
+                speaker.wait()
+        finally:
+            if speaker:
+                speaker.close()
+
+        reply = "".join(parts).strip()
+        if reply:
+            self.last_reply = reply
+
+        yield self._done_event(
+            reply=reply,
+            intent=control.intent,
+            control=control,
+            batch=batch,
+            started=started,
+            first_token=first_token,
+            first_audio=first_audio,
+        )
+
+    # -- event helpers --------------------------------------------------
+    def _fast_action_events(
+        self,
+        control: ControlMatch,
+        *,
+        speak: bool,
+        emit_audio: bool,
+        started: float,
+        audio_format: str,
+    ) -> Iterator[dict]:
+        intent = control.intent
+        log.debug("control: %s (matched %r)", intent, control.matched)
+        text = ""
+
+        if intent == "stop":
+            # Half-duplex loop: by the time we hear "stop" nothing is playing.
+            yield self._done_event(
+                reply="", intent=intent, control=control, batch=None, started=started
+            )
+            return
+
+        if intent == "remember":
+            stored = bool(self.memory and self.memory.append(control.fact, source="user"))
+            text = (
+                "Okay, I'll remember that."
+                if stored
+                else "I already knew that one."
+            )
+
+        if intent == "reset":
+            self.agent.reset()
+            self.last_reply = ""
+            text = FAST_REPLIES["reset"]
+        elif intent == "repeat":
+            text = self.last_reply or FAST_REPLIES["repeat_empty"]
+        elif intent == "exit":
+            text = FAST_REPLIES["exit"]
+
+        if intent == "remember" and text:
+            yield {"type": "memory", "fact": control.fact, "stored": bool(text.startswith("Okay"))}
+
+        if text:
+            yield {"type": "delta", "text": text}
+            if speak:
+                play_pcm(
+                    b"".join(self.client.speech_pcm(text)),
+                    sample_rate=self.settings.tts_sample_rate,
+                )
+            if emit_audio:
+                yield self._audio_event(text, audio_format)
+            self.last_reply = text if intent != "reset" else ""
+
+        yield self._done_event(
+            reply=text, intent=intent, control=control, batch=None, started=started
+        )
+        if intent == "exit":
+            raise StopLoop
+
+    def _tool_events(self, user_text: str):
+        """Yield tool events, then return the executed batch to the caller."""
+        if not self.settings.mcp_enabled or not self.start_tools():
+            return None
+
+        route = self.tool_router.route(user_text)
+        self.last_tool_route = route
+        if not route.has_calls:
+            log.debug("no tool: %s", route.reason)
+            return None
+
+        for request in route.requests:
+            yield {
+                "type": "tool",
+                "name": request.tool.name,
+                "arguments": request.arguments,
+                "confidence": round(route.confidence, 4),
+            }
+
+        calls: list[ToolCall] = []
+        for request in route.requests:
+            call_started = time.perf_counter()
+            result = self.hub.call(request.tool.name, request.arguments)
+            latency = time.perf_counter() - call_started
+            log.info(
+                "tool %s(%s) -> %s",
+                request.tool.name,
+                json.dumps(request.arguments, ensure_ascii=False),
+                result[:120],
+            )
+            call = ToolCall(
+                tool=request.tool,
+                arguments=request.arguments,
+                result=result,
+                latency_s=latency,
+                error=result.startswith("error:"),
+            )
+            calls.append(call)
+            yield {
+                "type": "tool_result",
+                "name": request.tool.name,
+                "result": result,
+                "latency_ms": round(latency * 1000, 1),
+                "error": call.error,
+            }
+
+        return ToolBatch(calls=calls) if calls else None
+
+    def _audio_event(self, sentence: str, audio_format: str = "wav") -> dict:
+        """One spoken sentence.
+
+        ``wav`` is a complete file the browser can feed straight into an
+        ``<audio>`` element. ``pcm`` is raw samples, which is what the CLI wants
+        when it is collecting a single file to write at the end.
+        """
+        if audio_format == "pcm":
+            audio = b"".join(self.client.speech_pcm(sentence))
+        else:
+            audio = self.client.speech_wav(sentence)
+        return {
+            "type": "audio",
+            "sentence": sentence,
+            "sample_rate": self.settings.tts_sample_rate,
+            "format": audio_format,
+            "b64": base64.b64encode(audio).decode("ascii"),
+        }
+
+    def _done_event(
+        self,
+        *,
+        reply: str,
+        intent: str,
+        control: ControlMatch,
+        batch: ToolBatch | None,
+        started: float,
+        first_token: float = 0.0,
+        first_audio: float = 0.0,
+    ) -> dict:
+        compaction = self.agent.last_compaction
+        return {
+            "type": "done",
+            "reply": reply,
+            "intent": intent,
+            "matched": control.matched,
+            "tool": list(batch.names) if batch else [],
+            "tool_confidence": round(self.last_tool_route.confidence, 4)
+            if batch and self.last_tool_route
+            else 0.0,
+            "timings": {
+                "route_ms": round(control.latency_s * 1000, 3),
+                "tool_ms": round(batch.latency_s * 1000, 1) if batch else 0.0,
+                "first_token_s": round(first_token, 3),
+                "first_audio_s": round(first_audio, 3),
+                "total_s": round(time.perf_counter() - started, 3),
+            },
+            "context_tokens": self.agent.history_tokens,
+            "compaction": {
+                "messages_removed": compaction.messages_removed,
+                "tokens_before": compaction.tokens_before,
+                "tokens_after": compaction.tokens_after,
+            }
+            if compaction
+            else None,
+        }
+
+    # ------------------------------------------------------------------
+    # Convenience wrappers over stream_events
+    # ------------------------------------------------------------------
     def respond(
         self,
         user_text: str,
@@ -178,30 +490,15 @@ class VoicePipeline:
         use_tools: bool = True,
     ) -> TurnResult:
         """Route, maybe call tools, and answer one text turn."""
-        started = time.perf_counter()
-        control = self.controls.match(user_text) if route else ControlMatch()
-
-        fast = self._fast_action(control, speak=speak, save_wav=save_wav)
-        if fast is not None:
-            fast.transcript = user_text
-            fast.total_s = time.perf_counter() - started
-            return fast
-
-        batch = self._maybe_call_tools(user_text) if use_tools else None
-
-        result = self.reply(
+        return self._consume(
             user_text,
             speak=speak,
             save_wav=save_wav,
             on_delta=on_delta,
             on_sentence=on_sentence,
-            tool_batch=batch,
+            route=route,
+            use_tools=use_tools,
         )
-        result.transcript = user_text
-        result.intent = control.intent
-        result.route_s = control.latency_s
-        result.total_s = time.perf_counter() - started
-        return result
 
     def reply(
         self,
@@ -214,67 +511,77 @@ class VoicePipeline:
         think: bool = False,
         tool_batch: ToolBatch | None = None,
     ) -> TurnResult:
-        """Run one LLM turn, optionally speaking it aloud."""
+        """Answer without routing — used by benchmarks and tests."""
+        return self._consume(
+            user_text,
+            speak=speak,
+            save_wav=save_wav,
+            on_delta=on_delta,
+            on_sentence=on_sentence,
+            route=False,
+            use_tools=False,
+            think=think,
+            tool_batch=tool_batch,
+        )
+
+    def _consume(
+        self,
+        user_text: str,
+        *,
+        speak: bool,
+        save_wav: Path | None,
+        on_delta: Callable[[str], None] | None,
+        on_sentence: Callable[[str], None] | None,
+        route: bool,
+        use_tools: bool,
+        think: bool = False,
+        tool_batch: ToolBatch | None = None,
+    ) -> TurnResult:
         started = time.perf_counter()
-        chunker = SentenceChunker()
-        captured: list[bytes] | None = [] if save_wav else None
-        tts_stream = self._tts_stream(captured)
+        result = TurnResult(transcript=user_text)
+        pcm_chunks: list[bytes] = []
 
-        speaker = Speaker(tts_stream, sample_rate=self.settings.tts_sample_rate) if speak else None
-        parts: list[str] = []
-        first_token = 0.0
-        first_audio = 0.0
-
-        extra_context = tool_batch.as_prompt() if tool_batch else None
-
-        try:
-            for delta in self.agent.respond(user_text, think=think, extra_context=extra_context):
-                if not first_token:
-                    first_token = time.perf_counter() - started
-                parts.append(delta)
+        for event in self.stream_events(
+            user_text,
+            speak=speak,
+            emit_audio=save_wav is not None,
+            route=route,
+            use_tools=use_tools,
+            think=think,
+            tool_batch=tool_batch,
+            audio_format="pcm" if save_wav else "wav",
+        ):
+            kind = event["type"]
+            if kind == "delta":
                 if on_delta:
-                    on_delta(delta)
-                for sentence in chunker.push(delta):
-                    if not first_audio:
-                        first_audio = time.perf_counter() - started
-                    if on_sentence:
-                        on_sentence(sentence)
-                    if speaker:
-                        speaker.say(sentence)
-            for sentence in chunker.flush():
-                if not first_audio:
-                    first_audio = time.perf_counter() - started
+                    on_delta(event["text"])
+            elif kind == "audio":
+                pcm_chunks.append(base64.b64decode(event["b64"]))
                 if on_sentence:
-                    on_sentence(sentence)
-                if speaker:
-                    speaker.say(sentence)
-            if speaker:
-                speaker.wait()
-        finally:
-            if speaker:
-                speaker.close()
+                    on_sentence(event["sentence"])
+            elif kind == "route":
+                result.intent = event["intent"]
+                result.route_s = event["latency_ms"] / 1000
+            elif kind == "tool_result":
+                result.tool_result = event["result"]
+            elif kind == "done":
+                result.reply = event["reply"]
+                result.intent = event["intent"]
+                result.tool_confidence = event["tool_confidence"]
+                result.tool_s = event["timings"]["tool_ms"] / 1000
+                result.first_token_s = event["timings"]["first_token_s"]
+                result.first_audio_s = event["timings"]["first_audio_s"]
+                result.compaction = self.agent.last_compaction
+                if event["tool"]:
+                    result.tool = ", ".join(event["tool"])
+                    if self.last_tool_route and self.last_tool_route.requests:
+                        result.tool_args = self.last_tool_route.requests[0].arguments
 
-        reply_text = "".join(parts).strip()
-        if reply_text:
-            self.last_reply = reply_text
-        if save_wav and captured is not None:
-            write_wav(save_wav, b"".join(captured), self.settings.tts_sample_rate)
+        if save_wav and pcm_chunks:
+            write_wav(save_wav, b"".join(pcm_chunks), self.settings.tts_sample_rate)
             log.info("wrote %s", save_wav)
 
-        result = TurnResult(
-            reply=reply_text,
-            first_token_s=first_token,
-            first_audio_s=first_audio,
-            total_s=time.perf_counter() - started,
-            compaction=self.agent.last_compaction,
-        )
-        if tool_batch and tool_batch.calls:
-            result.tool = ", ".join(tool_batch.names)
-            result.tool_args = tool_batch.calls[0].arguments
-            result.tool_result = " | ".join(call.result for call in tool_batch.calls)
-            result.tool_s = tool_batch.latency_s
-            route = self.last_tool_route
-            result.tool_confidence = route.confidence if route else 0.0
+        result.total_s = time.perf_counter() - started
         return result
 
     def say(
@@ -364,79 +671,6 @@ class VoicePipeline:
                 f"Peak observed memory: {guard.peak_mb:.0f} MB "
                 f"(budget {self.settings.memory_budget_mb} MB)"
             )
-
-    # -- fast actions --------------------------------------------------
-    def _fast_action(
-        self, control: ControlMatch, *, speak: bool, save_wav: Path | None
-    ) -> TurnResult | None:
-        """Handle control intents without the language model."""
-        if not control.is_fast_action:
-            return None
-
-        intent = control.intent
-        log.debug("control: %s (matched %r)", intent, control.matched)
-
-        if intent == "stop":
-            # Half-duplex loop: by the time we hear "stop" nothing is playing.
-            # The honest action is to end the turn silently.
-            return TurnResult(intent=intent, route_s=control.latency_s)
-
-        if intent == "reset":
-            self.agent.reset()
-            self.last_reply = ""
-            result = self.say(FAST_REPLIES["reset"], speak=speak, save_wav=save_wav)
-            result.intent = intent
-            result.route_s = control.latency_s
-            return result
-
-        if intent == "repeat":
-            text = self.last_reply or FAST_REPLIES["repeat_empty"]
-            result = self.say(text, speak=speak, save_wav=save_wav)
-            result.intent = intent
-            result.route_s = control.latency_s
-            return result
-
-        if intent == "exit":
-            self.say(FAST_REPLIES["exit"], speak=speak, save_wav=save_wav)
-            raise StopLoop
-
-        return None
-
-    # -- tools ---------------------------------------------------------
-    def _maybe_call_tools(self, user_text: str) -> ToolBatch | None:
-        """Let Needle pick tools and fill arguments; execute them if confident."""
-        if not self.settings.mcp_enabled:
-            return None
-        if not self.start_tools():
-            return None
-
-        route = self.tool_router.route(user_text)
-        self.last_tool_route = route
-        if not route.has_calls:
-            log.debug("no tool: %s", route.reason)
-            return None
-
-        calls: list[ToolCall] = []
-        for request in route.requests:
-            started = time.perf_counter()
-            result = self.hub.call(request.tool.name, request.arguments)
-            latency = time.perf_counter() - started
-            log.info(
-                "tool %s(%s) -> %s",
-                request.tool.name,
-                json.dumps(request.arguments, ensure_ascii=False),
-                result[:120],
-            )
-            calls.append(
-                ToolCall(
-                    tool=request.tool,
-                    arguments=request.arguments,
-                    result=result,
-                    latency_s=latency,
-                    error=result.startswith("error:"),
-                )
-            )
-        return ToolBatch(calls=calls) if calls else None
 
     # -- helpers -------------------------------------------------------
     def _tts_stream(

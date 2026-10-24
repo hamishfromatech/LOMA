@@ -36,8 +36,10 @@ def test_tool_call_prompt_names_the_tool_and_forbids_a_second_call():
     call = ToolCall(tool=make_tool(), arguments={"count": 2}, result='{"rolls":[3,5]}')
     prompt = call.as_prompt()
     assert "roll_dice" in prompt
-    assert "do not call the tool again" in prompt.lower()
-    assert json.loads(prompt.split("\n")[1])["arguments"] == {"count": 2}
+    assert "do not call them again" in prompt.lower()
+    # Flat and readable, not a nested JSON array.
+    assert "count=2" in prompt
+    assert "rolls=[3, 5]" in prompt
 
 
 def test_error_tool_call_asks_for_an_honest_answer():
@@ -152,8 +154,15 @@ def test_batch_prompt_covers_every_call():
     prompt = batch.as_prompt()
     assert "roll_dice" in prompt
     assert "get_time" in prompt
-    assert "do not call a tool again" in prompt.lower()
+    assert "do not call them again" in prompt.lower()
     assert batch.names == ["roll_dice", "get_time"]
+
+
+def test_batch_prompt_is_flat_not_nested_json():
+    prompt = ToolBatch(calls=[call()]).as_prompt()
+    assert prompt.count("\n") == 1  # header + one line
+    assert "{" not in prompt
+    assert "rolls=[3, 5]" in prompt
 
 
 def test_empty_batch_has_no_prompt():

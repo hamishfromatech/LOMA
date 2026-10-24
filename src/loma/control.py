@@ -70,6 +70,23 @@ PHRASES: dict[str, frozenset[str]] = {
 #: that only means "be quiet".
 _ORDER = ("exit", "reset", "repeat", "stop")
 
+#: "Remember that ..." is an open-ended command, so it is a prefix rather than a
+#: phrase. Matched against the raw utterance, before filler removal, because the
+#: filler list would eat the word "that".
+REMEMBER_PREFIXES: tuple[str, ...] = (
+    "remember that ",
+    "remember ",
+    "note that ",
+    "make a note that ",
+    "make a note ",
+    "keep in mind that ",
+    "keep in mind ",
+    "don't forget that ",
+    "dont forget that ",
+    "don't forget ",
+    "dont forget ",
+)
+
 _NON_WORD = re.compile(r"[^a-z0-9' ]+")
 _SPACES = re.compile(r"\s+")
 
@@ -82,10 +99,12 @@ class ControlMatch:
     matched: str = ""
     latency_s: float = 0.0
     text: str = ""
+    #: For ``remember``: the sentence that follows the command.
+    fact: str = ""
 
     @property
     def is_fast_action(self) -> bool:
-        return self.intent in PHRASES
+        return self.intent in PHRASES or self.intent == "remember"
 
     def as_dict(self) -> dict:
         return {
@@ -113,6 +132,20 @@ class ControlRouter:
         started = time.perf_counter()
         if not self.enabled or not text.strip():
             return ControlMatch(latency_s=time.perf_counter() - started, text=text)
+
+        stripped = text.strip()
+        lowered = stripped.lower()
+        for prefix in REMEMBER_PREFIXES:
+            if lowered.startswith(prefix):
+                fact = stripped[len(prefix) :].strip(" .,!?:;")
+                if len(fact) >= 3:
+                    return ControlMatch(
+                        intent="remember",
+                        matched=prefix.strip(),
+                        fact=fact,
+                        latency_s=time.perf_counter() - started,
+                        text=text,
+                    )
 
         phrase = normalise(text)
         for intent in _ORDER:

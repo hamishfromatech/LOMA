@@ -12,6 +12,7 @@ visible for students.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -21,6 +22,8 @@ from loma.config import Settings
 
 # TTS requests are capped by the server at 4096 characters.
 MAX_SPEECH_CHARS = 4000
+
+log = logging.getLogger(__name__)
 
 
 class OllamaError(RuntimeError):
@@ -65,6 +68,72 @@ class OllamaClient:
         response = self._http.get("/api/ps")
         _raise_for_status(response)
         return response.json().get("models", [])
+
+    def list_models(self) -> list[dict[str, Any]]:
+        """Every model installed locally, smallest first."""
+        response = self._http.get("/api/tags")
+        _raise_for_status(response)
+        models = []
+        for model in response.json().get("models", []):
+            name = model.get("name", "")
+            details = model.get("details") or {}
+            models.append(
+                {
+                    "name": name,
+                    "size_mb": round(model.get("size", 0) / 1_000_000, 1),
+                    "family": details.get("family", ""),
+                    "parameters": details.get("parameter_size", ""),
+                    "capabilities": self.capabilities(name),
+                }
+            )
+        return sorted(models, key=lambda item: item["size_mb"])
+
+    def capabilities(self, model: str) -> list[str]:
+        """A model's capabilities: completion, vision, tools, thinking, speech…"""
+        try:
+            response = self._http.post("/api/show", json={"model": model}, timeout=10)
+        except httpx.HTTPError:
+            return []
+        if not response.is_success:
+            return []
+        return list(response.json().get("capabilities") or [])
+
+    def voices(self, model: str | None = None) -> list[str]:
+        """Discover a speech model's voices.
+
+        This Ollama build does not expose ``voices`` in ``/api/show``, but an
+        unknown voice is rejected with the full list, so probe once and parse it.
+        """
+        model = model or self.settings.tts_model
+        probe = {
+            "model": model,
+            "input": "hi",
+            "voice": "__loma_probe__",
+            "response_format": "wav",
+        }
+        try:
+            response = self._http.post("/v1/audio/speech", json=probe)
+        except httpx.HTTPError:
+            return []
+        if response.status_code == 200:
+            # The server accepts arbitrary voices; offer the documented ones.
+            return ["default", "Zoey", "Easton", "Freya"]
+        try:
+            message = str((response.json().get("error") or {}).get("message", ""))
+        except ValueError:
+            message = response.text
+        marker = "available voices:"
+        if marker in message:
+            listed = message.split(marker, 1)[1]
+            return [voice.strip() for voice in listed.split(",") if voice.strip()]
+        return []
+
+    def unload(self, model: str) -> None:
+        """Ask Ollama to drop a model from memory now."""
+        try:
+            self._http.post("/api/generate", json={"model": model, "keep_alive": 0})
+        except httpx.HTTPError as exc:
+            log.debug("could not unload %s: %s", model, exc)
 
     def has_model(self, name: str) -> bool:
         """True when ``name`` appears in the local model list."""

@@ -66,17 +66,7 @@ class ToolCall:
 
     def as_prompt(self) -> str:
         """The one-shot system note the LLM sees. Deliberately small."""
-        payload = {"tool": self.tool.name, "arguments": self.arguments, "result": self.result}
-        note = json.dumps(payload, ensure_ascii=False)
-        if self.error:
-            return (
-                f"The {self.tool.name} tool was called and failed: {self.result}. "
-                "Tell the user briefly that it did not work."
-            )
-        return (
-            f"The {self.tool.name} tool already ran and returned:\n{note}\n"
-            "Answer the user's question using this result. Do not call the tool again."
-        )
+        return ToolBatch(calls=[self]).as_prompt()
 
 
 @dataclass(slots=True)
@@ -98,31 +88,33 @@ class ToolBatch:
         return sum(call.latency_s for call in self.calls)
 
     def as_prompt(self) -> str:
-        """One compact system note covering every call in the batch.
+        """One flat system note covering every call in the batch.
 
         Deliberately not persisted: tool payloads must never accumulate in the
-        context window.
+        context window. Deliberately *flat*: a 0.8B model reads
+        ``roll_die(sides=20) returned: roll=2`` correctly where a nested JSON
+        array made it invent a different number.
         """
         if not self.calls:
             return ""
-        payload = [
-            {
-                "tool": call.tool.name,
-                "arguments": call.arguments,
-                "result": call.result,
-            }
-            for call in self.calls
-        ]
-        body = json.dumps(payload, ensure_ascii=False)
-        if self.failed:
-            return (
-                f"The requested tools ran but at least one failed:\n{body}\n"
-                "Tell the user briefly what did not work."
+
+        lines: list[str] = []
+        for call in self.calls:
+            arguments = ", ".join(f"{key}={value!r}" for key, value in call.arguments.items())
+            lines.append(
+                f"- {call.tool.name}({arguments}) returned: {_readable(call.result)}"
             )
-        return (
-            f"The requested tools already ran and returned:\n{body}\n"
-            "Answer the user's question using these results. Do not call a tool again."
+
+        # "Supersede any earlier result" matters: a small model will otherwise
+        # repeat its previous answer when the same question is asked twice.
+        header = (
+            "These tools just ran. Their results supersede anything said earlier "
+            "in this conversation. Answer from these numbers only; do not call "
+            "them again."
+            if not self.failed
+            else "These tools ran but at least one failed. Tell the user briefly."
         )
+        return header + "\n" + "\n".join(lines)
 
     def as_dict(self) -> dict:
         return {
@@ -363,6 +355,27 @@ class MCPHub:
             input_schema=schema,
             server=getattr(tool, "server", "") or "",
         )
+
+
+def _readable(result: str) -> str:
+    """Flatten a tool's JSON result into one plain line for the model."""
+    text = result.strip()
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return text
+
+    if isinstance(data, dict):
+        return "; ".join(f"{key}={_scalar(value)}" for key, value in data.items())
+    if isinstance(data, list):
+        return ", ".join(_scalar(value) for value in data)
+    return _scalar(data)
+
+
+def _scalar(value) -> str:
+    if isinstance(value, (str, int, float, bool)):
+        return str(value)
+    return json.dumps(value, ensure_ascii=False)
 
 
 def _result_text(result) -> str:

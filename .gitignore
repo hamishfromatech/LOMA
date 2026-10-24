@@ -7,8 +7,12 @@ dist/
 .venv/
 venv/
 
-# Local model cache (re-downloaded by `phonon doctor --pull`)
+# Local model cache (re-downloaded by `loma doctor --pull`)
 models/
+
+# Runtime data: conversations, long-term memory, UI preferences
+data/
+loma.prefs.json
 
 # Recorded / generated audio
 *.wav
@@ -23,3 +27,9 @@ output/
 .vscode/
 .ruff_cache/
 .pytest_cache/
+
+# Next.js
+web/node_modules/
+web/.next/
+web/out/
+web/next-env.d.ts

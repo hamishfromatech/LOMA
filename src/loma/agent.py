@@ -58,6 +58,8 @@ class Agent:
         self.last_prompt_tokens = 0
         self.compactions = 0
         self.last_compaction: Compaction | None = None
+        #: Long-term memory, injected per request and never persisted here.
+        self.memory_context = ""
         self._messages: list[dict[str, str]] = [
             {"role": "system", "content": settings.system_prompt}
         ]
@@ -76,6 +78,21 @@ class Agent:
         self._messages = [{"role": "system", "content": self.settings.system_prompt}]
         self.last_prompt_tokens = 0
         self.last_compaction = None
+
+    def load(self, messages: list[dict[str, str]]) -> None:
+        """Restore a conversation from disk, keeping the current system prompt."""
+        self._messages = [{"role": "system", "content": self.settings.system_prompt}]
+        for message in messages:
+            role = message.get("role")
+            content = message.get("content", "")
+            if role in {"user", "assistant"} and content:
+                self._messages.append({"role": role, "content": content})
+        self.last_prompt_tokens = 0
+        self.last_compaction = None
+
+    def transcript(self) -> list[dict[str, str]]:
+        """The persistable part of the conversation — no system messages."""
+        return [m for m in self._messages if m["role"] in {"user", "assistant"}]
 
     def respond(
         self,
@@ -102,6 +119,9 @@ class Agent:
         self._trim()
 
         messages = self.messages
+        if self.memory_context:
+            # Right after the persona prompt, before the conversation.
+            messages.insert(1, {"role": "system", "content": self.memory_context})
         if extra_context:
             messages.append({"role": "system", "content": extra_context})
 

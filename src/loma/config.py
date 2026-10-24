@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from loma.context import context_window_for_ram
+from loma.preferences import load_preferences
 
 # --------------------------------------------------------------------------
 # Defaults
@@ -86,7 +87,7 @@ class Settings:
     # context.py and docs/RAM_BUDGET.md.
     num_ctx: int = 131_072
     max_tokens: int = 256
-    temperature: float = 0.6
+    temperature: float = 0.4
     history_turns: int = 6
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
 
@@ -110,13 +111,31 @@ class Settings:
     mic_device: int | None = None
     tts_sample_rate: int = 24_000  # Phonon emits 24 kHz mono PCM
 
+    # Where the Settings page stores the model and voice it picked.
+    prefs_path: Path = _PROJECT_ROOT / "loma.prefs.json"
+
+    # Conversations, long-term memory and anything else the app writes.
+    data_dir: Path = _PROJECT_ROOT / "data"
+    memory_enabled: bool = True
+    # Ask the model, after a turn, whether the user said something durable.
+    memory_auto_extract: bool = True
+
     # Safety
-    # 3 GB, measured: 1.3 GB LLM + 1.2 GB router + 121 MB TTS + ~280 MB Python.
+    # 3 GB, measured: 1.3 GB LLM + 45 MB Needle + 121 MB TTS + ~100 MB Python.
     # See docs/RAM_BUDGET.md.
     memory_budget_mb: int = 3072
     offline: bool = False
 
     # ------------------------------------------------------------------
+    @property
+    def memory_file(self) -> Path:
+        """The Markdown file behind long-term memory."""
+        return self.data_dir / "memory" / "MEMORY.md"
+
+    @property
+    def conversations_dir(self) -> Path:
+        return self.data_dir / "conversations"
+
     @property
     def whisper_dir(self) -> Path:
         """Where faster-whisper weights are cached."""
@@ -148,6 +167,15 @@ class Settings:
         if not mcp_config.is_absolute():
             mcp_config = _PROJECT_ROOT / mcp_config
 
+        prefs_path = Path(_env("LOMA_PREFS", str(_PROJECT_ROOT / "loma.prefs.json")))
+        if not prefs_path.is_absolute():
+            prefs_path = _PROJECT_ROOT / prefs_path
+        prefs = load_preferences(prefs_path)
+
+        data_dir = Path(_env("LOMA_DATA_DIR", str(_PROJECT_ROOT / "data")))
+        if not data_dir.is_absolute():
+            data_dir = _PROJECT_ROOT / data_dir
+
         mic_raw = os.getenv("LOMA_MIC_DEVICE", "").strip()
         mic_device: int | None = None
         if mic_raw:
@@ -165,13 +193,17 @@ class Settings:
 
         return cls(
             ollama_host=_env("OLLAMA_HOST", "http://localhost:11434").rstrip("/"),
-            llm_model=_env("LOMA_LLM_MODEL", "qwen3.5:0.8b"),
+            llm_model=prefs.get("llm_model") or _env("LOMA_LLM_MODEL", "qwen3.5:0.8b"),
             tts_model=_env("LOMA_TTS_MODEL", "phonon"),
-            tts_voice=_env("LOMA_TTS_VOICE", "default"),
+            tts_voice=prefs.get("tts_voice") or _env("LOMA_TTS_VOICE", "default"),
             keep_alive=_env("LOMA_KEEP_ALIVE", "30m"),
             control_enabled=_env("LOMA_CONTROL_ENABLED", True),
             mcp_enabled=_env("LOMA_MCP_ENABLED", True),
             mcp_config=mcp_config,
+            prefs_path=prefs_path,
+            data_dir=data_dir,
+            memory_enabled=_env("LOMA_MEMORY_ENABLED", True),
+            memory_auto_extract=_env("LOMA_MEMORY_AUTO_EXTRACT", True),
             tool_min_confidence=_env("LOMA_TOOL_MIN_CONFIDENCE", 0.50),
             tool_max_tools=_env("LOMA_TOOL_MAX_TOOLS", 40),
             stt_model=_env("LOMA_STT_MODEL", "tiny"),
@@ -181,7 +213,7 @@ class Settings:
             models_dir=models_dir,
             num_ctx=num_ctx,
             max_tokens=_env("LOMA_MAX_TOKENS", 256),
-            temperature=_env("LOMA_TEMPERATURE", 0.6),
+            temperature=prefs.get("temperature") or _env("LOMA_TEMPERATURE", 0.4),
             history_turns=_env("LOMA_HISTORY_TURNS", 6),
             compact_enabled=_env("LOMA_COMPACT_ENABLED", True),
             compact_at=_env("LOMA_COMPACT_AT", 0.60),
