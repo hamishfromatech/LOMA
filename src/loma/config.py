@@ -92,7 +92,10 @@ class Settings:
     # context.py and docs/RAM_BUDGET.md.
     num_ctx: int = 131_072
     max_tokens: int = 256
-    temperature: float = 0.4
+    # Low by design. At 0.4 a 0.8B narrates its own reasoning into the answer
+    # about one turn in three ("The user asks what time it is. I have…"), which is
+    # spoken aloud; at 0.2 it did not happen in six consecutive tool turns.
+    temperature: float = 0.2
     history_turns: int = 6
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
 
@@ -233,7 +236,7 @@ class Settings:
             models_dir=models_dir,
             num_ctx=num_ctx,
             max_tokens=_env("LOMA_MAX_TOKENS", 256),
-            temperature=prefs.get("temperature") or _env("LOMA_TEMPERATURE", 0.4),
+            temperature=prefs.get("temperature") if prefs.get("temperature") is not None else _env("LOMA_TEMPERATURE", 0.2),
             history_turns=_env("LOMA_HISTORY_TURNS", 6),
             compact_enabled=_env("LOMA_COMPACT_ENABLED", True),
             compact_at=_env("LOMA_COMPACT_AT", 0.60),

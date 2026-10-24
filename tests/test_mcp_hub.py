@@ -36,7 +36,9 @@ def test_tool_call_prompt_names_the_tool_and_forbids_a_second_call():
     call = ToolCall(tool=make_tool(), arguments={"count": 2}, result='{"rolls":[3,5]}')
     prompt = call.as_prompt()
     assert "roll_dice" in prompt
-    assert "do not call them again" in prompt.lower()
+    # Facts, not process: the note must not invite commentary about tooling.
+    assert "do not mention" in prompt.lower()
+    assert "tools just ran" not in prompt.lower()
     # Flat and readable, not a nested JSON array.
     assert "count=2" in prompt
     assert "rolls=[3, 5]" in prompt
@@ -154,7 +156,7 @@ def test_batch_prompt_covers_every_call():
     prompt = batch.as_prompt()
     assert "roll_dice" in prompt
     assert "get_time" in prompt
-    assert "do not call them again" in prompt.lower()
+    assert "do not mention" in prompt.lower()
     assert batch.names == ["roll_dice", "get_time"]
 
 

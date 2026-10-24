@@ -43,7 +43,10 @@ def get_current_time(utc_offset_hours: int = 0) -> str:
         from datetime import timedelta
 
         now = now.astimezone(timezone(timedelta(hours=utc_offset_hours)))
-    return now.strftime("%A, %d %B %Y at %H:%M")
+    # 12-hour with AM/PM, never 24-hour. A 0.8B asked to read "03:47" aloud says
+    # "three forty-seven p m" — it will not convert 24-hour time correctly, and
+    # the mistake is spoken. Give it the words it should say.
+    return now.strftime("%I:%M %p on %A, %d %B %Y").lstrip("0")
 
 
 @mcp.tool

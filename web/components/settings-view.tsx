@@ -383,8 +383,9 @@ export function SettingsView() {
               className="loma-range w-full"
             />
             <p className="text-[11px] leading-relaxed text-loma-faint">
-              Lower is more literal and repeats itself less. 0.3–0.5 is the
-              sweet spot for a spoken assistant.
+              Lower is more literal and repeats itself less. A small model starts
+              narrating its own reasoning above about 0.3, and those words get
+              spoken, so 0.2 is the default. Raise it if answers feel robotic.
             </p>
           </div>
         </Section>

@@ -105,14 +105,17 @@ class ToolBatch:
                 f"- {call.tool.name}({arguments}) returned: {_readable(call.result)}"
             )
 
-        # "Supersede any earlier result" matters: a small model will otherwise
-        # repeat its previous answer when the same question is asked twice.
+        # Facts, not process. The old header read "These tools just ran…", which
+        # a 0.8B answered by narrating the tooling back ("The user asked what
+        # time it is. The tool returned: …") instead of answering the question.
+        # "Supersede anything said earlier" still matters: without it a small
+        # model repeats its previous answer when the same question is asked twice.
         header = (
-            "These tools just ran. Their results supersede anything said earlier "
-            "in this conversation. Answer from these numbers only; do not call "
-            "them again."
+            "Here is what you already know for this reply. It supersedes anything "
+            "said earlier, and it is current. Use it directly; do not mention "
+            "tools, lookups or how you found it."
             if not self.failed
-            else "These tools ran but at least one failed. Tell the user briefly."
+            else "A lookup failed. Say so in one short sentence."
         )
         return header + "\n" + "\n".join(lines)
 

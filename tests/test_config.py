@@ -42,7 +42,8 @@ def test_with_returns_a_modified_copy():
     base = Settings()
     other = base.with_(temperature=0.0)
     assert other.temperature == 0.0
-    assert base.temperature == 0.4
+    # Low by default: at 0.4 a 0.8B narrates its reasoning into spoken answers.
+    assert base.temperature == 0.2
     assert other is not base
 
 
