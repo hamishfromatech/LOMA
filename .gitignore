@@ -33,3 +33,6 @@ web/node_modules/
 web/.next/
 web/out/
 web/next-env.d.ts
+
+# Next.js writes its own agent brief on first run.
+web/AGENTS.md

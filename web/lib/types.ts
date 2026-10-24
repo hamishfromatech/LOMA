@@ -101,6 +101,17 @@ export type ModelOption = {
   family: string
   parameters: string
   capabilities: string[]
+  /** Which Ollama listing produced it: api/tags, v1/models, or preference. */
+  quantization?: string
+  modified_at?: string
+  source?: string
+}
+
+export type ModelsPayload = {
+  models: ModelOption[]
+  current: string
+  source: string
+  error: string | null
 }
 
 export type McpServer = {

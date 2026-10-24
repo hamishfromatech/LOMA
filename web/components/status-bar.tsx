@@ -28,17 +28,17 @@ function Chip({
   children?: React.ReactNode
 }) {
   return (
-    <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-3 py-1">
-      <span className="text-white/40">{icon}</span>
-      <span className="font-mono text-[11px] tracking-tight text-white/40">
+    <div className="flex items-center gap-2 rounded-full border border-loma-line bg-white/[0.03] px-2.5 py-1">
+      <span className="text-loma-faint">{icon}</span>
+      <span className="font-mono text-[10.5px] tracking-tight text-loma-faint">
         {label}
       </span>
       <span
         className={cn(
-          "font-mono text-[11px] tabular-nums",
-          tone === "warn" && "text-amber-400",
-          tone === "ok" && "text-emerald-400",
-          tone === "default" && "text-white/80",
+          "font-mono text-[10.5px] tabular-nums",
+          tone === "warn" && "text-loma-accent",
+          tone === "ok" && "text-loma-ok",
+          tone === "default" && "text-loma-ink",
         )}
       >
         {value}
@@ -83,10 +83,10 @@ export function StatusBar({ status, className }: Props) {
       <Tooltip>
         <TooltipTrigger
           render={
-            <div className="flex cursor-default items-center gap-2 rounded-full border border-white/10 bg-white/[0.03] px-3 py-1">
-              <Wrench className="size-3 text-white/40" />
-              <span className="font-mono text-[11px] text-white/40">tools</span>
-              <span className="font-mono text-[11px] tabular-nums text-white/80">
+            <div className="flex cursor-default items-center gap-2 rounded-full border border-loma-line bg-white/[0.03] px-2.5 py-1">
+              <Wrench className="size-3 text-loma-faint" />
+              <span className="font-mono text-[10.5px] text-loma-faint">tools</span>
+              <span className="font-mono text-[10.5px] tabular-nums text-loma-ink">
                 {tools}
               </span>
             </div>

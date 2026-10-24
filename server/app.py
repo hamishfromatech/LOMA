@@ -153,6 +153,11 @@ def create_app() -> Flask:
         return jsonify(get_runtime().clear_memory())
 
     # -- settings ------------------------------------------------------
+    @app.get("/api/models")
+    def list_models() -> Response:
+        """What the picker should offer, straight from Ollama's own listing."""
+        return jsonify(get_runtime().models_payload())
+
     @app.get("/api/settings")
     def get_settings() -> Response:
         return jsonify(get_runtime().settings_payload())

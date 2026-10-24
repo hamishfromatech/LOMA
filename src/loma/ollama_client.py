@@ -23,6 +23,19 @@ from loma.config import Settings
 # TTS requests are capped by the server at 4096 characters.
 MAX_SPEECH_CHARS = 4000
 
+
+def _ordered_voices(voices: list[str]) -> list[str]:
+    """Default first, then alphabetical and de-duplicated (case-insensitive)."""
+    seen: dict[str, str] = {}
+    for voice in voices:
+        seen.setdefault(voice.casefold(), voice)
+    ordered = sorted(seen.values(), key=lambda voice: voice.casefold())
+    for index, voice in enumerate(ordered):
+        if voice.casefold() == "default":
+            ordered.insert(0, ordered.pop(index))
+            break
+    return ordered
+
 log = logging.getLogger(__name__)
 
 
@@ -39,6 +52,7 @@ class OllamaClient:
             base_url=settings.ollama_host,
             timeout=httpx.Timeout(timeout, connect=5.0),
         )
+        self._capability_cache: dict[str, list[str]] = {}
 
     # -- lifecycle -----------------------------------------------------
     def close(self) -> None:
@@ -69,13 +83,36 @@ class OllamaClient:
         _raise_for_status(response)
         return response.json().get("models", [])
 
-    def list_models(self) -> list[dict[str, Any]]:
-        """Every model installed locally, smallest first."""
+    def list_models(self, *, probe: bool = True) -> list[dict[str, Any]]:
+        """Every model installed locally, smallest first.
+
+        Ollama has two listings and they answer slightly different questions:
+
+        * ``GET /api/tags`` — the native list; carries size, family, parameter
+          count and quantisation. This is the one to prefer.
+        * ``GET /v1/models`` — the OpenAI-compatible list; only ids and
+          timestamps, but it exists on every build that speaks ``/v1``.
+
+        We try ``/api/tags`` first and fall back to ``/v1/models`` so the model
+        picker still fills when the native route is missing or proxied away.
+        """
+        try:
+            models = self._models_from_tags()
+        except (httpx.HTTPError, OllamaError):
+            models = self._models_from_v1()
+        if probe:
+            for model in models:
+                model["capabilities"] = self.capabilities(model["name"])
+        return sorted(models, key=lambda item: item["size_mb"])
+
+    def _models_from_tags(self) -> list[dict[str, Any]]:
         response = self._http.get("/api/tags")
         _raise_for_status(response)
         models = []
         for model in response.json().get("models", []):
-            name = model.get("name", "")
+            name = model.get("name") or model.get("model", "")
+            if not name:
+                continue
             details = model.get("details") or {}
             models.append(
                 {
@@ -83,28 +120,90 @@ class OllamaClient:
                     "size_mb": round(model.get("size", 0) / 1_000_000, 1),
                     "family": details.get("family", ""),
                     "parameters": details.get("parameter_size", ""),
-                    "capabilities": self.capabilities(name),
+                    "quantization": details.get("quantization_level", ""),
+                    "modified_at": model.get("modified_at", ""),
+                    "capabilities": [],
+                    "source": "api/tags",
                 }
             )
-        return sorted(models, key=lambda item: item["size_mb"])
+        return models
+
+    def _models_from_v1(self) -> list[dict[str, Any]]:
+        response = self._http.get("/v1/models")
+        _raise_for_status(response)
+        models = []
+        for model in response.json().get("data", []):
+            name = model.get("id", "")
+            if not name:
+                continue
+            models.append(
+                {
+                    "name": name,
+                    "size_mb": 0.0,
+                    "family": "",
+                    "parameters": "",
+                    "quantization": "",
+                    "modified_at": str(model.get("created", "")),
+                    "capabilities": [],
+                    "source": "v1/models",
+                }
+            )
+        return models
 
     def capabilities(self, model: str) -> list[str]:
-        """A model's capabilities: completion, vision, tools, thinking, speech…"""
+        """A model's capabilities: completion, vision, tools, thinking, speech…
+
+        Probing costs one ``/api/show`` per model, so the answers are cached.
+        An empty list means "unknown", never "unusable" — callers must treat it
+        as unproven rather than filtering the model out.
+        """
+        cached = self._capability_cache.get(model)
+        if cached is not None:
+            return cached
         try:
             response = self._http.post("/api/show", json={"model": model}, timeout=10)
         except httpx.HTTPError:
             return []
         if not response.is_success:
             return []
-        return list(response.json().get("capabilities") or [])
+        found = list(response.json().get("capabilities") or [])
+        self._capability_cache[model] = found
+        return found
 
     def voices(self, model: str | None = None) -> list[str]:
         """Discover a speech model's voices.
 
-        This Ollama build does not expose ``voices`` in ``/api/show``, but an
-        unknown voice is rejected with the full list, so probe once and parse it.
+        Ollama 0.40.9+ lists them in ``/api/show`` under ``voices`` (the same
+        payload that reports ``capabilities: ["speech"]``). On older builds that
+        field is missing, so we fall back to the documented behaviour of an
+        unknown voice: a 400 whose message lists the ones that do exist.
         """
         model = model or self.settings.tts_model
+
+        listed = self._voices_from_show(model)
+        if listed:
+            return listed
+        return self._voices_from_error(model)
+
+    def _voices_from_show(self, model: str) -> list[str]:
+        try:
+            response = self._http.post("/api/show", json={"model": model}, timeout=10)
+        except httpx.HTTPError:
+            return []
+        if not response.is_success:
+            return []
+        payload = response.json()
+        found: list[str] = []
+        for voice in payload.get("voices") or []:
+            if isinstance(voice, str):
+                found.append(voice)
+            elif isinstance(voice, dict):
+                name = voice.get("name") or voice.get("id")
+                if name:
+                    found.append(str(name))
+        return _ordered_voices(found)
+
+    def _voices_from_error(self, model: str) -> list[str]:
         probe = {
             "model": model,
             "input": "hi",
@@ -116,8 +215,8 @@ class OllamaClient:
         except httpx.HTTPError:
             return []
         if response.status_code == 200:
-            # The server accepts arbitrary voices; offer the documented ones.
-            return ["default", "Zoey", "Easton", "Freya"]
+            # The server accepts arbitrary voices; there is nothing to enumerate.
+            return []
         try:
             message = str((response.json().get("error") or {}).get("message", ""))
         except ValueError:
@@ -125,7 +224,9 @@ class OllamaClient:
         marker = "available voices:"
         if marker in message:
             listed = message.split(marker, 1)[1]
-            return [voice.strip() for voice in listed.split(",") if voice.strip()]
+            return _ordered_voices(
+                [voice.strip() for voice in listed.split(",") if voice.strip()]
+            )
         return []
 
     def unload(self, model: str) -> None:

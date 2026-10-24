@@ -91,30 +91,47 @@ export function MicButton({ onTranscript, disabled, className }: Props) {
   }, [stopStream])
 
   return (
-    <div className={cn("flex items-center gap-2", className)}>
+    <div className={cn("flex items-center gap-1.5", className)}>
+      {recording && (
+        <span className="flex items-center gap-1.5 rounded-full bg-loma-danger/10 px-2 py-1 font-mono text-[10px] tabular-nums text-loma-danger">
+          <span className="loma-breathe size-1.5 rounded-full bg-loma-danger" />
+          {String(Math.floor(seconds / 60)).padStart(2, "0")}:
+          {String(seconds % 60).padStart(2, "0")}
+        </span>
+      )}
+
+      {error && !recording && (
+        <span
+          role="status"
+          className="max-w-[130px] truncate font-mono text-[10px] text-loma-danger"
+        >
+          {error}
+        </span>
+      )}
+
       <Button
         type="button"
         size="icon"
-        variant={recording ? "destructive" : "ghost"}
+        variant="ghost"
         onClick={recording ? stop : start}
         disabled={disabled || working}
         aria-label={recording ? "Stop recording" : "Record a question"}
-        className={cn(recording && "animate-pulse")}
+        title={recording ? "Stop recording" : "Record a question"}
+        className={cn(
+          "size-8 rounded-full transition-colors",
+          recording
+            ? "bg-loma-danger/15 text-loma-danger hover:bg-loma-danger/25"
+            : "text-loma-dim hover:bg-white/[0.06] hover:text-loma-ink",
+        )}
       >
         {working ? (
           <Loader2 className="size-4 animate-spin" />
         ) : recording ? (
-          <Square className="size-4" />
+          <Square className="size-3 fill-current" />
         ) : (
           <Mic className="size-4" />
         )}
       </Button>
-      {recording && (
-        <span className="font-mono text-xs text-red-400">
-          rec {seconds}s
-        </span>
-      )}
-      {error && <span className="text-xs text-red-400">{error}</span>}
     </div>
   )
 }

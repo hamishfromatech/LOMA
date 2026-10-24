@@ -1,19 +1,12 @@
 "use client"
 
-import { Button } from "@/components/ui/button"
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible"
 import { cn } from "@/lib/utils"
-import {
-  CheckCircle,
-  ChevronDown,
-  Loader2,
-  Settings,
-  XCircle,
-} from "lucide-react"
+import { Check, ChevronDown, Loader2, Wrench, X } from "lucide-react"
 import { useState } from "react"
 
 export type ToolPart = {
@@ -35,167 +28,109 @@ export type ToolProps = {
   className?: string
 }
 
+/** One compact line per call. The interesting part is the result, not the chrome. */
 const Tool = ({ toolPart, defaultOpen = false, className }: ToolProps) => {
   const [isOpen, setIsOpen] = useState(defaultOpen)
+  const { state, input, output, toolCallId, errorText } = toolPart
 
-  const { state, input, output, toolCallId } = toolPart
+  const running = state === "input-streaming" || state === "input-available"
+  const failed = state === "output-error"
 
-  const getStateIcon = () => {
-    switch (state) {
-      case "input-streaming":
-        return <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
-      case "input-available":
-        return <Settings className="h-4 w-4 text-orange-500" />
-      case "output-available":
-        return <CheckCircle className="h-4 w-4 text-green-500" />
-      case "output-error":
-        return <XCircle className="h-4 w-4 text-red-500" />
-      default:
-        return <Settings className="text-muted-foreground h-4 w-4" />
-    }
-  }
-
-  const getStateBadge = () => {
-    const baseClasses = "px-2 py-1 rounded-full text-xs font-medium"
-    switch (state) {
-      case "input-streaming":
-        return (
-          <span
-            className={cn(
-              baseClasses,
-              "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
-            )}
-          >
-            Processing
-          </span>
-        )
-      case "input-available":
-        return (
-          <span
-            className={cn(
-              baseClasses,
-              "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400"
-            )}
-          >
-            Ready
-          </span>
-        )
-      case "output-available":
-        return (
-          <span
-            className={cn(
-              baseClasses,
-              "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
-            )}
-          >
-            Completed
-          </span>
-        )
-      case "output-error":
-        return (
-          <span
-            className={cn(
-              baseClasses,
-              "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
-            )}
-          >
-            Error
-          </span>
-        )
-      default:
-        return (
-          <span
-            className={cn(
-              baseClasses,
-              "bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-400"
-            )}
-          >
-            Pending
-          </span>
-        )
-    }
-  }
-
-  const formatValue = (value: unknown): string => {
-    if (value === null) return "null"
-    if (value === undefined) return "undefined"
-    if (typeof value === "string") return value
-    if (typeof value === "object") {
-      return JSON.stringify(value, null, 2)
-    }
-    return String(value)
-  }
+  const args = input && Object.keys(input).length > 0 ? input : null
 
   return (
-    <div
-      className={cn(
-        "border-border mt-3 overflow-hidden rounded-lg border",
-        className
-      )}
-    >
+    <div className={cn("overflow-hidden rounded-lg border border-loma-line bg-white/[0.02]", className)}>
       <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-        <CollapsibleTrigger render={<Button variant="ghost" className="bg-background h-auto w-full justify-between rounded-b-none px-3 py-2 font-normal" />}><div className="flex items-center gap-2">
-                            {getStateIcon()}
-                            <span className="font-mono text-sm font-medium">
-                              {toolPart.type}
-                            </span>
-                            {getStateBadge()}
-                          </div><ChevronDown className={cn("h-4 w-4", isOpen && "rotate-180")} /></CollapsibleTrigger>
-        <CollapsibleContent
-          className={cn(
-            "border-border border-t",
-            "data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down overflow-hidden"
-          )}
+        <CollapsibleTrigger
+          className="flex w-full items-center gap-2.5 px-3 py-2 text-left transition hover:bg-white/[0.03]"
+          aria-label={`${toolPart.type} — ${running ? "running" : failed ? "failed" : "completed"}`}
         >
-          <div className="bg-background space-y-3 p-3">
-            {input && Object.keys(input).length > 0 && (
+          <span
+            className={cn(
+              "grid size-4 shrink-0 place-items-center rounded-full",
+              running && "text-loma-teal",
+              !running && !failed && "text-loma-ok",
+              failed && "text-loma-danger",
+            )}
+          >
+            {running ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : failed ? (
+              <X className="size-3.5" />
+            ) : (
+              <Check className="size-3.5" />
+            )}
+          </span>
+
+          <span className="font-mono text-[12.5px] text-loma-ink">{toolPart.type}</span>
+
+          {args && (
+            <span className="truncate font-mono text-[11.5px] text-loma-faint">
+              {Object.entries(args)
+                .map(([, value]) =>
+                  typeof value === "string" ? value : JSON.stringify(value),
+                )
+                .join(" · ")}
+            </span>
+          )}
+
+          <span className="ml-auto flex shrink-0 items-center gap-2">
+            <span
+              className={cn(
+                "font-mono text-[10px] uppercase tracking-[0.12em]",
+                running && "text-loma-teal",
+                !running && !failed && "text-loma-faint",
+                failed && "text-loma-danger",
+              )}
+            >
+              {running ? "running" : failed ? "failed" : "done"}
+            </span>
+            <ChevronDown
+              className={cn(
+                "size-3.5 text-loma-faint transition-transform duration-200",
+                isOpen && "rotate-180",
+              )}
+            />
+          </span>
+        </CollapsibleTrigger>
+
+        <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
+          <div className="space-y-2.5 border-t border-loma-line-soft px-3 py-2.5">
+            {args && (
               <div>
-                <h4 className="text-muted-foreground mb-2 text-sm font-medium">
-                  Input
-                </h4>
-                <div className="bg-background rounded border p-2 font-mono text-sm">
-                  {Object.entries(input).map(([key, value]) => (
-                    <div key={key} className="mb-1">
-                      <span className="text-muted-foreground">{key}:</span>{" "}
-                      <span>{formatValue(value)}</span>
-                    </div>
-                  ))}
-                </div>
+                <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.14em] text-loma-faint">
+                  arguments
+                </p>
+                <pre className="overflow-x-auto rounded-md bg-black/30 px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-loma-dim">
+                  {JSON.stringify(args, null, 2)}
+                </pre>
               </div>
             )}
 
             {output && (
               <div>
-                <h4 className="text-muted-foreground mb-2 text-sm font-medium">
-                  Output
-                </h4>
-                <div className="bg-background max-h-60 overflow-auto rounded border p-2 font-mono text-sm">
-                  <pre className="whitespace-pre-wrap">
-                    {formatValue(output)}
-                  </pre>
-                </div>
+                <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.14em] text-loma-faint">
+                  result
+                </p>
+                <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-black/30 px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-loma-ink/85">
+                  {typeof output === "object"
+                    ? JSON.stringify(output, null, 2)
+                    : String(output)}
+                </pre>
               </div>
             )}
 
-            {state === "output-error" && toolPart.errorText && (
-              <div>
-                <h4 className="mb-2 text-sm font-medium text-red-500">Error</h4>
-                <div className="bg-background rounded border border-red-200 p-2 text-sm dark:border-red-950 dark:bg-red-900/20">
-                  {toolPart.errorText}
-                </div>
-              </div>
-            )}
-
-            {state === "input-streaming" && (
-              <div className="text-muted-foreground text-sm">
-                Processing tool call...
-              </div>
+            {failed && errorText && (
+              <p className="rounded-md border border-loma-danger/25 bg-loma-danger/[0.06] px-2.5 py-2 font-mono text-[11.5px] text-loma-danger">
+                {errorText}
+              </p>
             )}
 
             {toolCallId && (
-              <div className="text-muted-foreground border-t border-blue-200 pt-2 text-xs">
-                <span className="font-mono">Call ID: {toolCallId}</span>
-              </div>
+              <p className="flex items-center gap-1.5 font-mono text-[10px] text-loma-faint/70">
+                <Wrench className="size-2.5" />
+                {toolCallId}
+              </p>
             )}
           </div>
         </CollapsibleContent>

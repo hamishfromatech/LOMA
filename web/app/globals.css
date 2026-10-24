@@ -4,12 +4,33 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* ---------------------------------------------------------------------------
+   LOMA — one palette, stolen from the cover: warm near-black, cream ink,
+   amber for the interactive things, a thread of teal for the voice.
+   --------------------------------------------------------------------------- */
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
+  --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-sans);
+  --font-heading: var(--font-geist-sans);
+
+  --color-loma-bg: var(--loma-bg);
+  --color-loma-surface: var(--loma-surface);
+  --color-loma-raise: var(--loma-raise);
+  --color-loma-float: var(--loma-float);
+  --color-loma-line: var(--loma-line);
+  --color-loma-line-soft: var(--loma-line-soft);
+  --color-loma-ink: var(--loma-ink);
+  --color-loma-dim: var(--loma-dim);
+  --color-loma-faint: var(--loma-faint);
+  --color-loma-accent: var(--loma-accent);
+  --color-loma-accent-soft: var(--loma-accent-soft);
+  --color-loma-teal: var(--loma-teal);
+  --color-loma-ok: var(--loma-ok);
+  --color-loma-danger: var(--loma-danger);
+
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -18,11 +39,6 @@
   --color-sidebar-primary: var(--sidebar-primary);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar: var(--sidebar);
-  --color-chart-5: var(--chart-5);
-  --color-chart-4: var(--chart-4);
-  --color-chart-3: var(--chart-3);
-  --color-chart-2: var(--chart-2);
-  --color-chart-1: var(--chart-1);
   --color-ring: var(--ring);
   --color-input: var(--input);
   --color-border: var(--border);
@@ -39,6 +55,7 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
+
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -49,136 +66,334 @@
 }
 
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
-}
+  --loma-bg: #161514;
+  --loma-surface: #1d1b19;
+  --loma-raise: #24211e;
+  /* Anything that floats above the page needs to be lighter than the page,
+     or a dropdown reads as a hole rather than a layer. */
+  --loma-float: #2c2823;
+  --loma-line: rgba(255, 250, 242, 0.09);
+  --loma-line-soft: rgba(255, 250, 242, 0.055);
+  --loma-ink: #f4efe7;
+  --loma-dim: #a9a29a;
+  --loma-faint: #7c756e;
+  --loma-accent: #e3a85c;
+  --loma-accent-soft: rgba(227, 168, 92, 0.14);
+  --loma-teal: #5fd3c0;
+  --loma-ok: #6fbf8b;
+  --loma-danger: #e8837a;
 
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --radius: 0.75rem;
+
+  --background: var(--loma-bg);
+  --foreground: var(--loma-ink);
+  --card: var(--loma-surface);
+  --card-foreground: var(--loma-ink);
+  --popover: var(--loma-float);
+  --popover-foreground: var(--loma-ink);
+  --primary: var(--loma-ink);
+  --primary-foreground: #14120f;
+  --secondary: var(--loma-raise);
+  --secondary-foreground: var(--loma-ink);
+  --muted: var(--loma-raise);
+  --muted-foreground: var(--loma-dim);
+  --accent: var(--loma-raise);
+  --accent-foreground: var(--loma-ink);
+  --destructive: var(--loma-danger);
+  --border: var(--loma-line);
+  --input: var(--loma-line);
+  --ring: rgba(227, 168, 92, 0.45);
+
+  --sidebar: var(--loma-bg);
+  --sidebar-foreground: var(--loma-ink);
+  --sidebar-primary: var(--loma-accent);
+  --sidebar-primary-foreground: #14120f;
+  --sidebar-accent: var(--loma-raise);
+  --sidebar-accent-foreground: var(--loma-ink);
+  --sidebar-border: var(--loma-line);
+  --sidebar-ring: rgba(227, 168, 92, 0.45);
 }
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
-  }
-  body {
-    @apply bg-background text-foreground;
+    @apply border-border;
   }
   html {
     @apply font-sans;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    background: var(--loma-bg);
+    color: var(--loma-ink);
+    font-feature-settings: "cv11", "ss01", "ss03";
+    font-synthesis-weight: none;
+  }
+  ::selection {
+    background: rgba(227, 168, 92, 0.26);
+    color: #fff7ea;
+  }
+  :focus-visible {
+    outline: 2px solid rgba(227, 168, 92, 0.5);
+    outline-offset: 2px;
+  }
+  /* Thin scrollbars that disappear into the near-black. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 250, 242, 0.14) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 9px;
+    height: 9px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: rgba(255, 250, 242, 0.13);
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 250, 242, 0.24);
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
   }
 }
-/* -------------------------------------------------------------------------
-   LOMA — Open WebUI-flavoured dark theme
-   Flat near-black, one raised surface for the composer, almost no chrome.
-   ------------------------------------------------------------------------- */
 
-.dark {
-  --background: oklch(0.155 0 0);
-  --foreground: oklch(0.94 0 0);
-  --card: oklch(0.19 0 0);
-  --popover: oklch(0.19 0 0);
-  --primary: oklch(0.98 0 0);
-  --primary-foreground: oklch(0.16 0 0);
-  --secondary: oklch(0.23 0 0);
-  --muted: oklch(0.23 0 0);
-  --muted-foreground: oklch(0.68 0 0);
-  --accent: oklch(0.25 0 0);
-  --accent-foreground: oklch(0.96 0 0);
-  --border: oklch(1 0 0 / 7%);
-  --input: oklch(1 0 0 / 10%);
-  --ring: oklch(0.7 0 0 / 40%);
+/* ---------------------------------------------------------------------------
+   Answer typography.
+   The prose plugin is not installed, so `prose` classes are inert. This is the
+   real stylesheet for anything the model writes.
+   --------------------------------------------------------------------------- */
+
+.loma-prose {
+  font-size: 15px;
+  line-height: 1.72;
+  color: var(--loma-ink);
+  letter-spacing: -0.002em;
 }
 
-html,
-body {
-  height: 100%;
+.loma-prose > * {
+  margin-block: 0;
+}
+.loma-prose > * + * {
+  margin-top: 0.95em;
 }
 
-body {
-  background: #171717;
-  color: #eeeeee;
-  font-feature-settings: "cv11", "ss01";
+.loma-prose p {
+  text-wrap: pretty;
 }
 
-::selection {
-  background: rgba(255, 255, 255, 0.16);
+.loma-prose strong {
+  font-weight: 600;
+  color: #fffaf1;
 }
 
-/* Thin scrollbars that disappear into the near-black. */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+.loma-prose em {
+  font-style: italic;
+  color: var(--loma-ink);
 }
 
-*::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+.loma-prose h1,
+.loma-prose h2,
+.loma-prose h3,
+.loma-prose h4 {
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.25;
+  color: #fffaf1;
+  text-wrap: balance;
 }
-*::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.12);
-  border-radius: 999px;
+.loma-prose h1 { font-size: 1.5em; margin-top: 1.5em; }
+.loma-prose h2 { font-size: 1.22em; margin-top: 1.5em; }
+.loma-prose h3 { font-size: 1.06em; margin-top: 1.35em; }
+.loma-prose h4 { font-size: 1em;     margin-top: 1.25em; }
+
+.loma-prose ul,
+.loma-prose ol {
+  padding-left: 1.35em;
 }
-*::-webkit-scrollbar-track {
+.loma-prose ul { list-style: disc; }
+.loma-prose ol { list-style: decimal; }
+.loma-prose li {
+  margin-block: 0.3em;
+  padding-left: 0.15em;
+}
+.loma-prose li::marker {
+  color: var(--loma-faint);
+  font-variant-numeric: tabular-nums;
+}
+.loma-prose li > p {
+  margin: 0;
+}
+.loma-prose li > ul,
+.loma-prose li > ol {
+  margin-top: 0.3em;
+}
+
+.loma-prose a {
+  color: var(--loma-ink);
+  text-decoration: underline;
+  text-decoration-color: rgba(227, 168, 92, 0.45);
+  text-underline-offset: 3px;
+  transition: text-decoration-color 120ms ease;
+}
+.loma-prose a:hover {
+  text-decoration-color: var(--loma-accent);
+}
+
+.loma-prose blockquote {
+  border-left: 2px solid rgba(227, 168, 92, 0.4);
+  padding-left: 0.95em;
+  color: var(--loma-dim);
+}
+
+.loma-prose hr {
+  border: 0;
+  height: 1px;
+  background: var(--loma-line);
+  margin-block: 1.5em;
+}
+
+.loma-prose code:not(pre code) {
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 0.855em;
+  padding: 0.14em 0.38em;
+  border-radius: 5px;
+  background: rgba(255, 250, 242, 0.08);
+  border: 1px solid var(--loma-line-soft);
+  color: #f0d8b4;
+  white-space: nowrap;
+}
+
+.loma-prose pre {
+  margin: 0;
+}
+
+.loma-prose table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92em;
+}
+.loma-prose th,
+.loma-prose td {
+  border: 1px solid var(--loma-line);
+  padding: 0.5em 0.7em;
+  text-align: left;
+}
+.loma-prose th {
+  background: var(--loma-raise);
+  font-weight: 600;
+}
+
+/* Shiki output — the theme carries the colours, this carries the frame. */
+.loma-code pre.shiki {
+  background: transparent !important;
+  padding: 14px 16px;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.65;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+}
+.loma-code pre.shiki code {
+  font-family: inherit;
   background: transparent;
+  border: 0;
+  padding: 0;
+}
+
+/* The blinking caret at the end of a streaming answer. */
+@keyframes loma-caret {
+  0%, 45% { opacity: 1; }
+  55%, 100% { opacity: 0; }
+}
+/* Trail the caret behind the last block, not below it. */
+.loma-caret > :last-child::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 1.02em;
+  margin-left: 3px;
+  vertical-align: -0.16em;
+  border-radius: 1px;
+  background: var(--loma-accent);
+  animation: loma-caret 1.05s steps(1, end) infinite;
+}
+
+/* Slow breathing halo for the recording state. */
+@keyframes loma-breathe {
+  0%, 100% { opacity: 0.55; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.12); }
+}
+.loma-breathe {
+  animation: loma-breathe 1.8s ease-in-out infinite;
+}
+
+@keyframes loma-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.loma-rise {
+  animation: loma-rise 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Range input — one thumb, one filled track, no vendor chrome. */
+.loma-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 20px;
+  background: transparent;
+  cursor: pointer;
+}
+.loma-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--loma-accent) 0%,
+    var(--loma-accent) var(--fill, 40%),
+    rgba(255, 250, 242, 0.12) var(--fill, 40%),
+    rgba(255, 250, 242, 0.12) 100%
+  );
+}
+.loma-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  margin-top: -5.5px;
+  border-radius: 999px;
+  background: #fdf8f0;
+  border: 1px solid rgba(0, 0, 0, 0.35);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.55);
+  transition: transform 120ms ease;
+}
+.loma-range:hover::-webkit-slider-thumb { transform: scale(1.12); }
+.loma-range::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 250, 242, 0.12);
+}
+.loma-range::-moz-range-progress {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--loma-accent);
+}
+.loma-range::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: #fdf8f0;
+  border: 1px solid rgba(0, 0, 0, 0.35);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loma-rise,
+  .loma-breathe,
+  /* Trail the caret behind the last block, not below it. */
+.loma-caret > :last-child::after {
+    animation: none !important;
+  }
 }

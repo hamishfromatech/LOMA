@@ -1,38 +1,18 @@
 "use client"
 
+import { AnswerMessage, UserMessage } from "@/components/answer"
+import { LomaMark } from "@/components/brand"
+import { Composer } from "@/components/composer"
 import { ChatsDrawer } from "@/components/sidebar"
 import { IconRail } from "@/components/icon-rail"
-import { MicButton } from "@/components/mic-button"
-import { TurnMetrics } from "@/components/turn-metrics"
+import { StatusBar } from "@/components/status-bar"
 import { useAudioQueue } from "@/components/audio-queue"
 import {
   ChatContainerContent,
   ChatContainerRoot,
   ChatContainerScrollAnchor,
 } from "@/components/ui/chat-container"
-import { DotsLoader } from "@/components/ui/loader"
-import { Message, MessageContent } from "@/components/ui/message"
-import {
-  PromptInput,
-  PromptInputActions,
-  PromptInputTextarea,
-} from "@/components/ui/prompt-input"
-import {
-  Reasoning,
-  ReasoningContent,
-  ReasoningTrigger,
-} from "@/components/ui/reasoning"
 import { ScrollButton } from "@/components/ui/scroll-button"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import { SystemMessage } from "@/components/ui/system-message"
-import { Tool, type ToolPart } from "@/components/ui/tool"
-import { Button } from "@/components/ui/button"
 import {
   createConversation,
   deleteConversation,
@@ -40,6 +20,8 @@ import {
   getSettings,
   getStatus,
   listConversations,
+  listModels,
+  renameConversation,
   streamChat,
   updateSettings,
 } from "@/lib/api"
@@ -47,52 +29,51 @@ import type {
   ChatMessage,
   Conversation,
   ConversationSummary,
+  ModelOption,
   SettingsPayload,
   Status,
   StreamEvent,
-  ToolCallView,
 } from "@/lib/types"
+import { cn } from "@/lib/utils"
 import {
-  ArrowUp,
-  AudioLines,
+  Brain,
+  Dice5,
+  FileText,
   Loader2,
-  Settings2,
-  Sparkle,
+  MonitorSmartphone,
   Sparkles,
-  Square,
-  Volume2,
-  VolumeX,
-  Wrench,
-  X,
 } from "lucide-react"
-import Link from "next/link"
 import { useCallback, useEffect, useRef, useState } from "react"
 
 const SUGGESTIONS = [
-  { title: "Tell me a fun fact", subtitle: "about the Roman Empire" },
-  { title: "Roll the dice", subtitle: "a twenty-sided die, for a game" },
-  { title: "What's on this machine?", subtitle: "memory, CPU and OS" },
-  { title: "Remember something", subtitle: "I prefer tea over coffee" },
+  {
+    icon: MonitorSmartphone,
+    title: "What's on this machine?",
+    subtitle: "memory, CPU and OS",
+    prompt: "What's on this machine?",
+  },
+  {
+    icon: Brain,
+    title: "Remember something",
+    subtitle: "I prefer tea over coffee",
+    prompt: "Remember that I prefer tea over coffee.",
+  },
+  {
+    icon: FileText,
+    title: "Summarise a file",
+    subtitle: "paste it in, keep it local",
+    prompt: "Summarise the file I paste next in three lines.",
+  },
+  {
+    icon: Dice5,
+    title: "Roll the dice",
+    subtitle: "a twenty-sided die, for a game",
+    prompt: "Roll a twenty-sided die for a game.",
+  },
 ]
 
 function newId() {
   return Math.random().toString(36).slice(2, 10)
-}
-
-function toToolPart(tool: ToolCallView): ToolPart {
-  return {
-    type: tool.name,
-    state:
-      tool.status === "running"
-        ? "input-available"
-        : tool.status === "error"
-          ? "output-error"
-          : "output-available",
-    input: tool.arguments,
-    output: tool.result ? { result: tool.result } : undefined,
-    toolCallId: tool.id,
-    errorText: tool.error ? tool.result : undefined,
-  }
 }
 
 function fromConversation(conversation: Conversation): ChatMessage[] {
@@ -104,130 +85,66 @@ function fromConversation(conversation: Conversation): ChatMessage[] {
   }))
 }
 
-// ---------------------------------------------------------------------------
-// Composer — one large rounded surface, controls along the bottom
-// ---------------------------------------------------------------------------
-
-type ComposerProps = {
-  value: string
-  onValueChange: (value: string) => void
-  onSubmit: () => void
-  busy: boolean
-  onStop: () => void
-  voiceOn: boolean
-  onToggleVoice: () => void
-  onTranscript: (text: string) => void
-  settings: SettingsPayload | null
-  onModelChange: (model: string) => void
+function greeting() {
+  const hour = new Date().getHours()
+  if (hour < 5) return "Still up"
+  if (hour < 12) return "Good morning"
+  if (hour < 18) return "Good afternoon"
+  return "Good evening"
 }
 
-function Composer({
-  value,
-  onValueChange,
-  onSubmit,
-  busy,
-  onStop,
-  voiceOn,
-  onToggleVoice,
-  onTranscript,
-  settings,
-  onModelChange,
-}: ComposerProps) {
+/** Small always-visible health readout. Click for the full budget. */
+function StatusPill({ status }: { status: Status | null }) {
+  const [open, setOpen] = useState(false)
+
   return (
-    <PromptInput
-      value={value}
-      onValueChange={onValueChange}
-      onSubmit={onSubmit}
-      isLoading={busy}
-      className="rounded-[26px] border border-white/[0.07] bg-[#1f1f1f] px-4 pb-2.5 pt-3.5 shadow-[0_1px_0_rgba(255,255,255,0.04)_inset,0_18px_40px_-24px_rgba(0,0,0,0.9)]"
-    >
-      <PromptInputTextarea
-        id="loma-prompt"
-        name="message"
-        aria-label="Message LOMA"
-        placeholder="How can I help you today?"
-        className="min-h-[46px] rounded-none border-0 bg-transparent px-1 py-1 text-[15px] leading-relaxed shadow-none placeholder:text-white/35 focus-visible:border-0 focus-visible:ring-0 dark:bg-transparent"
-      />
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        aria-label="Runtime status"
+        className={cn(
+          "flex h-7 items-center gap-2 rounded-full border px-2.5 font-mono text-[10.5px] transition",
+          "border-loma-line bg-white/[0.03] hover:bg-white/[0.06]",
+        )}
+      >
+        {status?.ready ? (
+          <span className="size-1.5 rounded-full bg-loma-ok shadow-[0_0_6px] shadow-loma-ok/50" />
+        ) : (
+          <Loader2 className="size-3 animate-spin text-loma-faint" />
+        )}
+        <span className="tabular-nums text-loma-dim">
+          {status ? `${(status.models.total_mb / 1024).toFixed(1)} GB` : "…"}
+        </span>
+        <span className="hidden text-loma-faint sm:inline">
+          {status ? status.config.llm_model : "connecting"}
+        </span>
+      </button>
 
-      <PromptInputActions className="justify-between px-0 pb-0 pt-1">
-        <div className="flex items-center gap-1">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            onClick={onToggleVoice}
-            aria-label={voiceOn ? "Mute spoken replies" : "Speak replies"}
-            title={voiceOn ? "Spoken replies on" : "Spoken replies off"}
-            className="rounded-full text-white/55 hover:bg-white/[0.07] hover:text-white"
-          >
-            {voiceOn ? (
-              <Volume2 className="size-4" />
-            ) : (
-              <VolumeX className="size-4" />
+      {open && (
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setOpen(false)}
+            aria-hidden
+          />
+          <div className="absolute right-0 top-9 z-50 w-[min(92vw,420px)] rounded-xl border border-loma-line bg-loma-raise p-3 shadow-2xl shadow-black/70">
+            <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.16em] text-loma-faint">
+              runtime
+            </p>
+            <StatusBar status={status} />
+            {status && (
+              <p className="mt-3 border-t border-loma-line-soft pt-2 font-mono text-[10px] leading-relaxed text-loma-faint">
+                {status.context.policy}
+              </p>
             )}
-          </Button>
-
-          <span className="hidden items-center gap-1.5 px-1 font-mono text-[11px] text-white/25 sm:flex">
-            <Wrench className="size-3.5" />
-            offline
-          </span>
-        </div>
-
-        <div className="flex items-center gap-1">
-          {settings && (
-            <Select
-              value={settings.llm_model}
-              onValueChange={(next) => onModelChange(String(next))}
-            >
-              <SelectTrigger
-                size="sm"
-                aria-label="Language model"
-                className="h-8 gap-1 border-0 bg-transparent px-2 font-mono text-[12px] text-white/60 shadow-none hover:bg-white/[0.05] hover:text-white/90"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {settings.options.llm_models.map((model) => (
-                  <SelectItem key={model.name} value={model.name}>
-                    {model.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-
-          <MicButton onTranscript={onTranscript} disabled={busy} />
-
-          <Button
-            type="button"
-            size="icon"
-            onClick={
-              busy
-                ? onStop
-                : value.trim()
-                  ? onSubmit
-                  : () => document.getElementById("loma-prompt")?.focus()
-            }
-            aria-label={busy ? "Stop" : value.trim() ? "Send" : "Start typing"}
-            className="size-9 rounded-full bg-white text-black transition hover:bg-white/90"
-          >
-            {busy ? (
-              <Square className="size-3.5" />
-            ) : value.trim() ? (
-              <ArrowUp className="size-4" />
-            ) : (
-              <AudioLines className="size-4" />
-            )}
-          </Button>
-        </div>
-      </PromptInputActions>
-    </PromptInput>
+          </div>
+        </>
+      )}
+    </div>
   )
 }
-
-// ---------------------------------------------------------------------------
-// Chat
-// ---------------------------------------------------------------------------
 
 export function ChatView() {
   const [conversations, setConversations] = useState<ConversationSummary[]>([])
@@ -238,17 +155,35 @@ export function ChatView() {
   const [voiceOn, setVoiceOn] = useState(true)
   const [status, setStatus] = useState<Status | null>(null)
   const [settings, setSettings] = useState<SettingsPayload | null>(null)
+  const [models, setModels] = useState<ModelOption[]>([])
+  const [modelsLoading, setModelsLoading] = useState(false)
   const [chatsOpen, setChatsOpen] = useState(false)
-  const [bannerOpen, setBannerOpen] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [hello, setHello] = useState("Hello")
   const abort = useRef<AbortController | null>(null)
   const { enqueue, unlock, stop } = useAudioQueue()
+
+  useEffect(() => {
+    setHello(greeting())
+  }, [])
 
   const refreshStatus = useCallback(async () => {
     try {
       setStatus(await getStatus())
     } catch {
       setStatus(null)
+    }
+  }, [])
+
+  const refreshModels = useCallback(async () => {
+    setModelsLoading(true)
+    try {
+      const payload = await listModels()
+      setModels(payload.models)
+    } catch {
+      /* keep the last known list rather than blanking the picker */
+    } finally {
+      setModelsLoading(false)
     }
   }, [])
 
@@ -263,12 +198,26 @@ export function ChatView() {
   useEffect(() => {
     void refreshStatus()
     void refreshConversations()
+    void refreshModels()
     void getSettings()
       .then(setSettings)
       .catch(() => undefined)
     const timer = window.setInterval(refreshStatus, 10_000)
     return () => window.clearInterval(timer)
-  }, [refreshStatus, refreshConversations])
+  }, [refreshStatus, refreshConversations, refreshModels])
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const meta = event.metaKey || event.ctrlKey
+      if (meta && event.key.toLowerCase() === "k") {
+        event.preventDefault()
+        setChatsOpen((value) => !value)
+      }
+      if (event.key === "Escape") setChatsOpen(false)
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [])
 
   const openConversation = useCallback(
     async (id: string) => {
@@ -297,6 +246,20 @@ export function ChatView() {
     setChatsOpen(false)
   }, [stop])
 
+  const renameChat = useCallback(
+    async (id: string, title: string) => {
+      setConversations((current) =>
+        current.map((item) => (item.id === id ? { ...item, title } : item)),
+      )
+      try {
+        await renameConversation(id, title)
+      } catch {
+        setError("could not rename that conversation")
+      }
+    },
+    [],
+  )
+
   const removeChat = useCallback(
     async (id: string) => {
       try {
@@ -314,6 +277,7 @@ export function ChatView() {
     async (model: string) => {
       try {
         setSettings(await updateSettings({ llm_model: model }))
+        setModels((current) => current.map((item) => item))
         void refreshStatus()
       } catch {
         setError("could not switch the model")
@@ -485,10 +449,15 @@ export function ChatView() {
   }, [stop])
 
   const empty = messages.length === 0
-  const modelName = settings?.llm_model ?? "loading"
+  const storedTitle = conversations.find((item) => item.id === activeId)?.title
+  const firstLine = messages.find((item) => item.role === "user")?.content ?? ""
+  const activeTitle =
+    storedTitle && storedTitle !== "New chat"
+      ? storedTitle
+      : firstLine.trim().split("\n")[0].slice(0, 64) || "New chat"
 
   return (
-    <div className="flex h-dvh bg-[#171717] text-[#eeeeee]">
+    <div className="flex h-dvh overflow-hidden bg-loma-bg text-loma-ink">
       <IconRail
         onNew={newChat}
         onToggleChats={() => setChatsOpen((open) => !open)}
@@ -503,57 +472,36 @@ export function ChatView() {
         onNew={newChat}
         onSelect={(id) => void openConversation(id)}
         onDelete={(id) => void removeChat(id)}
+        onRename={(id, title) => void renameChat(id, title)}
       />
 
       <div className="relative flex min-w-0 flex-1 flex-col">
-        {/* top-right utilities */}
-        <div className="pointer-events-none absolute right-3 top-3 z-20 flex items-center gap-2">
-          <span className="pointer-events-auto flex items-center gap-1.5 rounded-full px-2 py-1 font-mono text-[10px] text-white/35">
-            {status?.ready ? (
-              <span className="size-1.5 rounded-full bg-emerald-400" />
-            ) : (
-              <Loader2 className="size-3 animate-spin" />
-            )}
-            {status ? `${Math.round(status.models.total_mb)} MB` : "…"}
-          </span>
-          <Link
-            href="/settings"
-            aria-label="Settings"
-            className="pointer-events-auto grid size-8 place-items-center rounded-lg text-white/40 transition hover:bg-white/[0.06] hover:text-white"
-          >
-            <Settings2 className="size-4" />
-          </Link>
-        </div>
-
-        {bannerOpen && (
-          <div className="z-10 flex items-center gap-2 border-b border-white/[0.06] bg-white/[0.02] py-1.5 pl-3 pr-24 text-[12px]">
-            <span className="rounded bg-sky-500/15 px-1.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wide text-sky-300">
-              info
-            </span>
-            <span className="truncate text-white/60">
-              LOMA runs entirely on this machine — every model, tool and memory
-              file stays local.
-            </span>
-            <button
-              onClick={() => setBannerOpen(false)}
-              aria-label="Dismiss"
-              className="ml-auto text-white/30 hover:text-white"
-            >
-              <X className="size-3.5" />
-            </button>
-          </div>
+        {empty && (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 top-0 h-[440px] bg-[radial-gradient(58%_100%_at_50%_0%,rgba(227,168,92,0.055),transparent_72%)]"
+          />
         )}
 
+        <header className="flex h-12 shrink-0 items-center gap-3 px-4 sm:px-6">
+          <p className="min-w-0 flex-1 truncate text-[12.5px] text-loma-faint">
+            {empty ? "" : activeTitle}
+          </p>
+          <StatusPill status={status} />
+        </header>
+
         {empty ? (
-          <div className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto px-4 pb-24">
-            <div className="w-full max-w-[760px]">
-              <div className="mb-7 flex items-center justify-center gap-3">
-                <span className="grid size-9 place-items-center rounded-xl bg-white text-black">
-                  <Sparkles className="size-4" />
-                </span>
-                <span className="text-[28px] font-medium tracking-tight text-white/95 sm:text-[32px]">
-                  {modelName}
-                </span>
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto px-4 pb-16">
+            <div className="w-full max-w-[720px]">
+              <div className="mb-8 flex flex-col items-center text-center">
+                <LomaMark size={44} className="mb-5" />
+                <h1 className="text-[27px] font-medium tracking-[-0.02em] text-loma-ink sm:text-[31px]">
+                  {hello}.
+                </h1>
+                <p className="mt-2 max-w-[440px] text-[13.5px] leading-relaxed text-loma-faint">
+                  Ask anything. Every model, tool and memory file stays on this
+                  machine — no network, no API bills.
+                </p>
               </div>
 
               <Composer
@@ -566,137 +514,72 @@ export function ChatView() {
                 onToggleVoice={() => setVoiceOn((value) => !value)}
                 onTranscript={(text) => void send(text)}
                 settings={settings}
+                models={models}
                 onModelChange={(model) => void changeModel(model)}
+                onRefreshModels={() => void refreshModels()}
+                modelsLoading={modelsLoading}
+                variant="hero"
               />
 
-              <div className="mt-6">
-                <p className="mb-2 flex items-center gap-1.5 text-[13px] text-white/45">
-                  <Sparkle className="size-3.5" />
-                  Suggested
+              <div className="mt-8">
+                <p className="mb-2.5 flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.16em] text-loma-faint">
+                  <Sparkles className="size-3" />
+                  try
                 </p>
-                <div className="grid gap-x-10 gap-y-3 sm:grid-cols-2">
+                <div className="grid gap-2 sm:grid-cols-2">
                   {SUGGESTIONS.map((suggestion) => (
                     <button
                       key={suggestion.title}
-                      onClick={() =>
-                        void send(`${suggestion.title} ${suggestion.subtitle}`)
-                      }
-                      className="rounded-lg py-1 text-left transition hover:opacity-80"
+                      onClick={() => void send(suggestion.prompt)}
+                      className={cn(
+                        "group flex items-start gap-2.5 rounded-xl border border-loma-line-soft bg-white/[0.015] px-3 py-2.5 text-left",
+                        "transition hover:border-loma-line hover:bg-white/[0.04]",
+                      )}
                     >
-                      <p className="text-[14px] text-white/85">{suggestion.title}</p>
-                      <p className="text-[13px] leading-snug text-white/40">
-                        {suggestion.subtitle}
-                      </p>
+                      <suggestion.icon className="mt-0.5 size-3.5 shrink-0 text-loma-faint transition group-hover:text-loma-accent" />
+                      <span className="min-w-0">
+                        <span className="block truncate text-[13px] text-loma-ink/90">
+                          {suggestion.title}
+                        </span>
+                        <span className="block truncate text-[11.5px] text-loma-faint">
+                          {suggestion.subtitle}
+                        </span>
+                      </span>
                     </button>
                   ))}
                 </div>
               </div>
+
+              {error && (
+                <p className="mt-6 text-center font-mono text-[10.5px] text-loma-danger">
+                  {error}
+                </p>
+              )}
             </div>
           </div>
         ) : (
           <>
             <main className="relative min-h-0 flex-1">
               <ChatContainerRoot className="flex h-full flex-col overflow-y-auto">
-                <ChatContainerContent className="mx-auto w-full max-w-[760px] space-y-7 px-4 py-8">
+                <ChatContainerContent className="mx-auto w-full max-w-[760px] space-y-8 px-4 pb-6 pt-2 sm:px-6">
                   {messages.map((message) =>
                     message.role === "user" ? (
-                      <Message key={message.id} className="justify-end">
-                        <MessageContent className="max-w-[85%] rounded-2xl rounded-br-md bg-white/[0.08] px-4 py-2.5 text-[14px] text-white/90">
-                          {message.content}
-                        </MessageContent>
-                      </Message>
+                      <UserMessage key={message.id} message={message} />
                     ) : (
-                      <Message key={message.id} className="gap-3">
-                        <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg bg-white text-black">
-                          <Sparkles className="size-3.5" />
-                        </span>
-
-                        <div className="min-w-0 flex-1 space-y-3">
-                          {message.tools.map((tool) => (
-                            <Tool key={tool.id} toolPart={toToolPart(tool)} />
-                          ))}
-
-                          {message.content && (
-                            <MessageContent
-                              markdown
-                              className="prose-invert max-w-none bg-transparent p-0 text-[14px] leading-relaxed"
-                            >
-                              {message.content}
-                            </MessageContent>
-                          )}
-
-                          {message.streaming && !message.content && (
-                            <div className="flex items-center gap-2 py-1">
-                              <DotsLoader />
-                              <span className="font-mono text-[10px] uppercase tracking-wider text-white/30">
-                                thinking
-                              </span>
-                            </div>
-                          )}
-
-                          {message.memory && (
-                            <SystemMessage variant="action" fill={false}>
-                              Remembered: {message.memory}
-                            </SystemMessage>
-                          )}
-
-                          {message.metrics && (
-                            <>
-                              {message.tools.length > 0 && (
-                                <Reasoning>
-                                  <ReasoningTrigger className="font-mono text-[10px] text-white/30 hover:text-white/60">
-                                    {message.tools.length} tool call
-                                    {message.tools.length > 1 ? "s" : ""} ·{" "}
-                                    {message.metrics.totalS.toFixed(2)}s
-                                  </ReasoningTrigger>
-                                  <ReasoningContent className="mt-2 rounded-lg border border-white/5 bg-white/[0.02] p-3">
-                                    <div className="space-y-1 font-mono text-[11px] text-white/45">
-                                      {message.tools.map((tool) => (
-                                        <p key={tool.id}>
-                                          {tool.name}(
-                                          {JSON.stringify(tool.arguments)}) →{" "}
-                                          {tool.result?.slice(0, 140) ?? "…"}
-                                        </p>
-                                      ))}
-                                      <p>
-                                        route: {message.intent ?? "answer"}
-                                        {message.matched ? ` · "${message.matched}"` : ""}
-                                        {" · "}
-                                        {message.metrics.routeMs.toFixed(2)} ms
-                                      </p>
-                                    </div>
-                                  </ReasoningContent>
-                                </Reasoning>
-                              )}
-
-                              <TurnMetrics
-                                metrics={message.metrics}
-                                intent={message.intent}
-                                matched={message.matched}
-                              />
-                            </>
-                          )}
-
-                          {message.error && (
-                            <p className="rounded-lg border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-300">
-                              {message.error}
-                            </p>
-                          )}
-                        </div>
-                      </Message>
+                      <AnswerMessage key={message.id} message={message} />
                     ),
                   )}
                 </ChatContainerContent>
 
                 <ChatContainerScrollAnchor />
 
-                <div className="pointer-events-none sticky bottom-4 z-10 -mt-14 flex w-full justify-center">
-                  <ScrollButton className="pointer-events-auto" />
+                <div className="pointer-events-none sticky bottom-2 z-10 -mt-12 flex w-full justify-center">
+                  <ScrollButton className="pointer-events-auto border border-loma-line bg-loma-raise text-loma-dim hover:text-loma-ink" />
                 </div>
               </ChatContainerRoot>
             </main>
 
-            <footer className="bg-gradient-to-t from-[#171717] via-[#171717] to-transparent px-4 pb-4 pt-2">
+            <footer className="shrink-0 bg-gradient-to-t from-loma-bg via-loma-bg to-transparent px-4 pb-3 pt-2 sm:px-6">
               <div className="mx-auto w-full max-w-[760px]">
                 <Composer
                   value={input}
@@ -708,27 +591,19 @@ export function ChatView() {
                   onToggleVoice={() => setVoiceOn((value) => !value)}
                   onTranscript={(text) => void send(text)}
                   settings={settings}
+                  models={models}
                   onModelChange={(model) => void changeModel(model)}
+                  onRefreshModels={() => void refreshModels()}
+                  modelsLoading={modelsLoading}
                 />
-                <div className="mt-2 flex items-center justify-between px-2">
-                  <p className="font-mono text-[10px] text-white/20">
-                    needle 3 · phonon · faster-whisper · offline
+                {error && (
+                  <p className="mt-1 truncate px-1 text-center font-mono text-[10px] text-loma-danger">
+                    {error}
                   </p>
-                  {error && (
-                    <p className="truncate font-mono text-[10px] text-red-400">
-                      {error}
-                    </p>
-                  )}
-                </div>
+                )}
               </div>
             </footer>
           </>
-        )}
-
-        {error && empty && (
-          <p className="absolute bottom-4 left-1/2 -translate-x-1/2 font-mono text-[10px] text-red-400">
-            {error}
-          </p>
         )}
       </div>
     </div>

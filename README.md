@@ -106,14 +106,21 @@ loma speak "hello" -o hello.wav
 A ChatGPT/Open-WebUI-shaped interface built on
 [prompt-kit](https://www.prompt-kit.com) components over a Flask API.
 
-- **Icon rail + conversation drawer** — every chat is a JSON file, grouped by
-  Today / Yesterday / Previous 7 days, searchable, renameable, deletable.
-- **One composer** — model picker, voice toggle, microphone and a white send
-  button, matching Open WebUI's silhouette.
-- **Live tool cards** — `prompt-kit`'s `Tool` shows the call while it is running
-  and its output when it returns.
-- **Reasoning panel** — the route decision, the tool result and the timings for
-  every answer.
+- **Icon rail + conversation drawer** (`⌘K`) — every chat is a JSON file,
+  grouped by Today / Yesterday / Previous 7 days, searchable, renameable,
+  deletable.
+- **One composer** — model picker, voice toggle, microphone and a send button,
+  matching Open WebUI's silhouette.
+- **Models come from Ollama, not a hard-coded list** — the picker reads
+  `GET /api/tags` (falling back to the OpenAI-compatible `GET /v1/models`) and
+  rescans every time it opens, so a fresh `ollama pull` appears without a
+  reload. A model whose `/api/show` probe fails is still offered; "unknown" is
+  not "cannot chat".
+- **Voices come from the model** — `voices` in `/api/show` on Ollama 0.40.9+,
+  with the documented unknown-voice `400` as the fallback.
+- **Live tool cards** — the call appears while it runs, then its result.
+- **One trace line per answer** — route, tool time, first token, first audio,
+  total and context. Expand it for the numbers.
 - **Spoken replies** — Phonon generates one WAV per sentence during the stream;
   the browser queues and plays them.
 - **Settings page** — language model, voice (with preview), MCP servers
@@ -124,6 +131,7 @@ A ChatGPT/Open-WebUI-shaped interface built on
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/api/status` | models, RAM, context, tools |
+| `GET` | `/api/models` | chat models, discovered from Ollama (`/api/tags`, then `/v1/models`) |
 | `GET/POST` | `/api/conversations` | list / create |
 | `GET/PATCH/DELETE` | `/api/conversations/<id>` | open / rename / delete |
 | `POST` | `/api/conversations/<id>/chat` | one turn, Server-Sent Events |

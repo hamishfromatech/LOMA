@@ -1,5 +1,6 @@
 "use client"
 
+import { LomaMark } from "@/components/brand"
 import { Badge } from "@/components/ui/badge"
 import { Button, buttonVariants } from "@/components/ui/button"
 import {
@@ -43,17 +44,20 @@ import {
   Server,
   Trash2,
   TriangleAlert,
-  Waves,
 } from "lucide-react"
 import Link from "next/link"
 import { useCallback, useEffect, useState } from "react"
+
+function plural(count: number, word: string) {
+  return `${count} ${word}${count === 1 ? "" : "s"}`
+}
 
 function StatusDot({ on }: { on: boolean }) {
   return (
     <span
       className={cn(
         "inline-block size-2 rounded-full",
-        on ? "bg-emerald-400 shadow-[0_0_8px] shadow-emerald-400/50" : "bg-white/20",
+        on ? "bg-loma-ok shadow-[0_0_8px] shadow-loma-ok/50" : "bg-white/20",
       )}
     />
   )
@@ -69,10 +73,12 @@ function Section({
   children: React.ReactNode
 }) {
   return (
-    <Card className="border-white/10 bg-white/[0.03] backdrop-blur">
+    <Card className="border-loma-line bg-loma-surface">
       <CardHeader>
-        <CardTitle className="text-base">{title}</CardTitle>
-        <CardDescription className="text-white/45">{description}</CardDescription>
+        <CardTitle className="text-[15px] tracking-[-0.01em] text-loma-ink">{title}</CardTitle>
+        <CardDescription className="text-[12.5px] leading-relaxed text-loma-faint">
+          {description}
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">{children}</CardContent>
     </Card>
@@ -246,7 +252,7 @@ export function SettingsView() {
   if (!settings) {
     return (
       <div className="grid h-dvh place-items-center">
-        <div className="flex items-center gap-3 text-sm text-white/40">
+        <div className="flex items-center gap-3 text-sm text-loma-faint">
           <Loader2 className="size-4 animate-spin" />
           loading settings…
         </div>
@@ -259,38 +265,43 @@ export function SettingsView() {
   )
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-4 py-8">
-      {/* ------------------------------------------------------------ */}
-      <div className="mb-8 flex items-center gap-3">
-        <Link
-          href="/"
-          aria-label="Back to chat"
-          className={buttonVariants({ variant: "ghost", size: "icon" })}
-        >
-          <ArrowLeft className="size-4" />
-        </Link>
-        <div className="flex items-center gap-2.5">
-          <span className="grid size-9 place-items-center rounded-xl bg-gradient-to-br from-amber-300 to-orange-500 text-black">
-            <Waves className="size-5" />
-          </span>
+    <div className="mx-auto w-full max-w-3xl px-4 pb-16">
+      <div className="sticky top-0 z-20 -mx-4 mb-6 border-b border-loma-line-soft bg-loma-bg/85 px-4 py-3 backdrop-blur-md">
+        <div className="flex items-center gap-3">
+          <Link
+            href="/"
+            aria-label="Back to chat"
+            className={cn(
+              buttonVariants({ variant: "ghost", size: "icon" }),
+              "size-8 text-loma-faint hover:bg-white/[0.06] hover:text-loma-ink",
+            )}
+          >
+            <ArrowLeft className="size-4" />
+          </Link>
+          <LomaMark size={26} />
           <div className="leading-none">
-            <h1 className="text-sm font-semibold tracking-[0.18em]">SETTINGS</h1>
-            <p className="mt-1 font-mono text-[10px] text-white/40">
+            <h1 className="font-mono text-[11px] uppercase tracking-[0.2em] text-loma-ink">
+              Settings
+            </h1>
+            <p className="mt-1.5 font-mono text-[9.5px] text-loma-faint">
               applied on the next turn, no restart
             </p>
           </div>
-        </div>
-        <div className="ml-auto flex h-6 items-center gap-2 text-xs text-emerald-400">
-          {saved && (
-            <>
-              <Check className="size-3.5" /> saved
-            </>
-          )}
+          <div
+            className={cn(
+              "ml-auto flex h-6 items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-loma-ok",
+              "transition-opacity duration-200",
+              saved ? "opacity-100" : "opacity-0",
+            )}
+            aria-live="polite"
+          >
+            <Check className="size-3" /> saved
+          </div>
         </div>
       </div>
 
       {error && (
-        <div className="mb-6 flex items-start gap-2 rounded-xl border border-red-500/30 bg-red-500/5 px-4 py-3 text-xs text-red-300">
+        <div className="mb-6 flex items-start gap-2 rounded-xl border border-loma-danger/25 bg-loma-danger/[0.06] px-4 py-3 text-[12.5px] text-loma-danger">
           <TriangleAlert className="mt-0.5 size-4 shrink-0" />
           <span>{error}</span>
         </div>
@@ -312,9 +323,13 @@ export function SettingsView() {
               <SelectTrigger id="llm" aria-label="Language model" className="w-full">
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent
+                alignItemWithTrigger={false}
+                sideOffset={6}
+                className="border border-loma-line p-1 shadow-2xl shadow-black/70"
+              >
                 {settings.options.llm_models.map((model) => (
-                  <SelectItem key={model.name} value={model.name}>
+                  <SelectItem key={model.name} value={model.name} className="pl-2.5">
                     {model.name} · {Math.round(model.size_mb)} MB
                     {model.parameters ? ` · ${model.parameters}` : ""}
                   </SelectItem>
@@ -322,7 +337,7 @@ export function SettingsView() {
               </SelectContent>
             </Select>
             {selectedModel && (
-              <p className="font-mono text-[10px] text-white/30">
+              <p className="font-mono text-[10px] text-loma-faint">
                 {[
                   selectedModel.parameters,
                   selectedModel.family,
@@ -334,12 +349,12 @@ export function SettingsView() {
             )}
           </div>
 
-          <Separator className="bg-white/5" />
+          <Separator className="bg-white/[0.05]" />
 
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <Label htmlFor="temperature">Temperature</Label>
-              <span className="font-mono text-xs text-white/50">
+              <span className="font-mono text-xs text-loma-dim">
                 {settings.temperature.toFixed(1)}
               </span>
             </div>
@@ -364,9 +379,10 @@ export function SettingsView() {
               onTouchEnd={(event) =>
                 void change({ temperature: Number(event.currentTarget.value) })
               }
-              className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-white/10 accent-amber-300"
+              style={{ ["--fill" as string]: `${Number(settings.temperature) * 100}%` }}
+              className="loma-range w-full"
             />
-            <p className="text-[11px] leading-relaxed text-white/35">
+            <p className="text-[11px] leading-relaxed text-loma-faint">
               Lower is more literal and repeats itself less. 0.3–0.5 is the
               sweet spot for a spoken assistant.
             </p>
@@ -389,9 +405,13 @@ export function SettingsView() {
                 <SelectTrigger id="voice" aria-label="Voice" className="w-full">
                   <SelectValue />
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent
+                  alignItemWithTrigger={false}
+                  sideOffset={6}
+                  className="border border-loma-line p-1 shadow-2xl shadow-black/70"
+                >
                   {settings.options.voices.map((voice) => (
-                    <SelectItem key={voice} value={voice}>
+                    <SelectItem key={voice} value={voice} className="pl-2.5">
                       {voice}
                     </SelectItem>
                   ))}
@@ -402,7 +422,7 @@ export function SettingsView() {
               variant="outline"
               onClick={() => void preview(settings.tts_voice)}
               disabled={busy !== null}
-              className="border-white/10"
+              className="border-loma-line"
             >
               {busy === `preview-${settings.tts_voice}` ? (
                 <Loader2 className="size-4 animate-spin" />
@@ -412,7 +432,7 @@ export function SettingsView() {
               Preview
             </Button>
           </div>
-          <p className="text-[11px] text-white/35">
+          <p className="text-[11px] text-loma-faint">
             The list comes from the speech model itself. Phonon adds named voices
             as it ships them; this build offers {settings.options.voices.length}.
           </p>
@@ -423,10 +443,10 @@ export function SettingsView() {
           title="Long-term memory"
           description="A Markdown file LOMA reads at the start of every turn and appends to when it learns something durable."
         >
-          <div className="flex flex-wrap items-center gap-2 text-xs text-white/45">
-            <Brain className="size-4 text-amber-300/70" />
-            {settings.memory.facts.length} fact(s) remembered
-            <span className="font-mono text-[10px] text-white/25">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-loma-dim">
+            <Brain className="size-4 text-loma-accent/80" />
+            {plural(settings.memory.facts.length, "fact")} remembered
+            <span className="font-mono text-[10px] text-loma-faint">
               {settings.memory.path}
             </span>
           </div>
@@ -437,14 +457,14 @@ export function SettingsView() {
             rows={10}
             spellCheck={false}
             aria-label="Memory contents"
-            className="w-full resize-y rounded-xl border border-white/10 bg-black/30 px-4 py-3 font-mono text-xs leading-relaxed text-white/75 outline-none placeholder:text-white/20 focus:border-white/20"
+            className="w-full resize-y rounded-xl border border-loma-line bg-black/30 px-4 py-3 font-mono text-xs leading-relaxed text-loma-ink/85 outline-none placeholder:text-loma-faint/60 focus:border-loma-accent/40"
             placeholder="# LOMA memory&#10;&#10;- Prefers tea over coffee&#10;- Runs a 27B model at Q4 on 32 GB"
           />
 
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="max-w-sm text-[11px] leading-relaxed text-white/30">
+            <p className="max-w-sm text-[11px] leading-relaxed text-loma-faint">
               Edit it by hand, delete a line, or say{" "}
-              <span className="text-white/50">“remember that …”</span> in chat.
+              <span className="text-loma-dim">“remember that …”</span> in chat.
               Auto-extraction is {settings.memory.auto_extract ? "on" : "off"}.
             </p>
             <div className="flex gap-2">
@@ -453,7 +473,7 @@ export function SettingsView() {
                 size="sm"
                 onClick={() => void wipeMemory()}
                 disabled={busy !== null}
-                className="text-white/40 hover:text-red-400"
+                className="text-loma-faint hover:text-red-400"
               >
                 {busy === "memory-clear" ? (
                   <Loader2 className="size-3.5 animate-spin" />
@@ -466,7 +486,7 @@ export function SettingsView() {
                 size="sm"
                 onClick={() => void saveMemory()}
                 disabled={busy !== null}
-                className="bg-amber-300 text-black hover:bg-amber-200"
+                className="bg-loma-accent text-[#1b1713] hover:bg-loma-accent/90"
               >
                 {busy === "memory" ? (
                   <Loader2 className="size-3.5 animate-spin" />
@@ -485,10 +505,10 @@ export function SettingsView() {
           description="Tools LOMA can call. Needle picks one and fills the arguments."
         >
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 text-xs text-white/45">
+            <div className="flex items-center gap-2 text-xs text-loma-dim">
               <StatusDot on={settings.mcp.connected} />
               {settings.mcp.connected
-                ? `${settings.mcp.tool_count} tools across ${settings.mcp.servers.length} server(s)`
+                ? `${plural(settings.mcp.tool_count, "tool")} across ${plural(settings.mcp.servers.length, "server")}`
                 : "not connected"}
             </div>
             <Button
@@ -508,7 +528,7 @@ export function SettingsView() {
 
           <div className="space-y-2">
             {settings.mcp.servers.length === 0 && (
-              <p className="rounded-lg border border-dashed border-white/10 px-4 py-6 text-center text-xs text-white/30">
+              <p className="rounded-lg border border-dashed border-loma-line px-4 py-6 text-center text-xs text-loma-faint">
                 No servers configured yet.
               </p>
             )}
@@ -516,29 +536,29 @@ export function SettingsView() {
             {settings.mcp.servers.map((server: McpServer) => (
               <div
                 key={server.name}
-                className="rounded-xl border border-white/10 bg-black/20 px-4 py-3"
+                className="rounded-xl border border-loma-line bg-black/20 px-4 py-3"
               >
                 <div className="flex items-start gap-3">
-                  <Server className="mt-0.5 size-4 shrink-0 text-white/30" />
+                  <Server className="mt-0.5 size-4 shrink-0 text-loma-faint" />
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-mono text-sm text-white/90">
+                      <span className="font-mono text-sm text-loma-ink">
                         {server.name}
                       </span>
                       <Badge
                         variant="secondary"
-                        className="bg-white/5 text-[10px] font-normal text-white/40"
+                        className="bg-white/[0.05] text-[10px] font-normal text-loma-faint"
                       >
                         {server.transport}
                       </Badge>
-                      <span className="flex items-center gap-1.5 font-mono text-[10px] text-white/35">
+                      <span className="flex items-center gap-1.5 font-mono text-[10px] text-loma-faint">
                         <StatusDot on={server.connected} />
                         {server.connected
-                          ? `${server.tools.length} tool(s)`
+                          ? plural(server.tools.length, "tool")
                           : "offline"}
                       </span>
                     </div>
-                    <p className="mt-1 truncate font-mono text-[11px] text-white/30">
+                    <p className="mt-1 truncate font-mono text-[11px] text-loma-faint">
                       {server.transport === "http"
                         ? server.url
                         : [server.command, ...server.args].join(" ")}
@@ -548,7 +568,7 @@ export function SettingsView() {
                         {server.tools.map((tool) => (
                           <span
                             key={tool}
-                            className="rounded bg-white/5 px-1.5 py-0.5 font-mono text-[10px] text-white/45"
+                            className="rounded bg-white/[0.05] px-1.5 py-0.5 font-mono text-[10px] text-loma-dim"
                           >
                             {tool}
                           </span>
@@ -562,7 +582,7 @@ export function SettingsView() {
                     aria-label={`Remove ${server.name}`}
                     onClick={() => void removeServer(server.name)}
                     disabled={busy !== null}
-                    className="text-white/30 hover:text-red-400"
+                    className="text-loma-faint hover:text-red-400"
                   >
                     {busy === `remove-${server.name}` ? (
                       <Loader2 className="size-4 animate-spin" />
@@ -575,16 +595,16 @@ export function SettingsView() {
             ))}
           </div>
 
-          <Separator className="bg-white/5" />
+          <Separator className="bg-white/[0.05]" />
 
           <div className="space-y-3">
-            <p className="flex items-center gap-2 text-xs font-medium text-white/60">
+            <p className="flex items-center gap-2 text-xs font-medium text-loma-dim">
               <Plus className="size-3.5" /> Add a server
             </p>
 
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="grid gap-1.5">
-                <Label htmlFor="server-name" className="text-[11px] text-white/45">
+                <Label htmlFor="server-name" className="text-[11px] text-loma-dim">
                   Name
                 </Label>
                 <Input
@@ -597,8 +617,8 @@ export function SettingsView() {
               </div>
 
               <div className="grid gap-1.5">
-                <Label className="text-[11px] text-white/45">Transport</Label>
-                <div className="flex gap-1 rounded-lg border border-white/10 p-1">
+                <Label className="text-[11px] text-loma-dim">Transport</Label>
+                <div className="flex gap-1 rounded-lg border border-loma-line p-1">
                   {(["stdio", "http"] as const).map((kind) => (
                     <button
                       key={kind}
@@ -606,8 +626,8 @@ export function SettingsView() {
                       className={cn(
                         "flex-1 rounded-md px-2 py-1 font-mono text-[11px] transition",
                         transport === kind
-                          ? "bg-white/10 text-white"
-                          : "text-white/40 hover:text-white/70",
+                          ? "bg-white/[0.12] text-loma-ink"
+                          : "text-loma-faint hover:text-loma-dim",
                       )}
                     >
                       {kind}
@@ -620,7 +640,7 @@ export function SettingsView() {
             {transport === "stdio" ? (
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="grid gap-1.5">
-                  <Label htmlFor="server-command" className="text-[11px] text-white/45">
+                  <Label htmlFor="server-command" className="text-[11px] text-loma-dim">
                     Command
                   </Label>
                   <Input
@@ -632,7 +652,7 @@ export function SettingsView() {
                   />
                 </div>
                 <div className="grid gap-1.5">
-                  <Label htmlFor="server-args" className="text-[11px] text-white/45">
+                  <Label htmlFor="server-args" className="text-[11px] text-loma-dim">
                     Arguments
                   </Label>
                   <Input
@@ -646,7 +666,7 @@ export function SettingsView() {
               </div>
             ) : (
               <div className="grid gap-1.5">
-                <Label htmlFor="server-url" className="text-[11px] text-white/45">
+                <Label htmlFor="server-url" className="text-[11px] text-loma-dim">
                   URL
                 </Label>
                 <Input
@@ -660,7 +680,7 @@ export function SettingsView() {
             )}
 
             <div className="grid gap-1.5">
-              <Label htmlFor="server-env" className="text-[11px] text-white/45">
+              <Label htmlFor="server-env" className="text-[11px] text-loma-dim">
                 Environment (optional JSON)
               </Label>
               <textarea
@@ -670,18 +690,18 @@ export function SettingsView() {
                 onChange={(event) => setEnv(event.target.value)}
                 rows={2}
                 placeholder={'{"API_KEY": "..."}'}
-                className="w-full rounded-lg border border-white/10 bg-transparent px-3 py-2 font-mono text-xs text-white/80 outline-none placeholder:text-white/20 focus:border-white/20"
+                className="w-full rounded-lg border border-loma-line bg-transparent px-3 py-2 font-mono text-xs text-loma-ink/90 outline-none placeholder:text-loma-faint/60 focus:border-loma-accent/40"
               />
             </div>
 
             <div className="flex items-center justify-between gap-3">
-              <p className="font-mono text-[10px] text-white/25">
+              <p className="font-mono text-[10px] text-loma-faint/80">
                 saved to {settings.mcp.path}
               </p>
               <Button
                 onClick={() => void addServer()}
                 disabled={busy !== null || !name.trim() || (!command.trim() && !url.trim())}
-                className="bg-amber-300 text-black hover:bg-amber-200"
+                className="bg-loma-accent text-[#1b1713] hover:bg-loma-accent/90"
               >
                 {busy === "add-server" ? (
                   <Loader2 className="size-4 animate-spin" />
@@ -691,7 +711,7 @@ export function SettingsView() {
                 Add server
               </Button>
             </div>
-            <p className="text-[11px] leading-relaxed text-white/30">
+            <p className="text-[11px] leading-relaxed text-loma-faint">
               LOMA restarts the tool router after every change and rolls the file
               back if the server does not come up. <code>{"${LOMA_ROOT}"}</code> and{" "}
               <code>{"${LOMA_PYTHON}"}</code> are expanded when the server starts.
@@ -699,7 +719,7 @@ export function SettingsView() {
           </div>
         </Section>
 
-        <p className="pb-6 text-center font-mono text-[10px] text-white/25">
+        <p className="pb-6 text-center font-mono text-[10px] text-loma-faint/80">
           {settings.context.policy}
         </p>
       </div>

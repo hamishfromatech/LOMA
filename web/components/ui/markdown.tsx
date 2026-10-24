@@ -1,4 +1,3 @@
-import { cn } from "@/lib/utils"
 import { marked } from "marked"
 import { memo, useId, useMemo } from "react"
 import ReactMarkdown, { Components } from "react-markdown"
@@ -32,15 +31,9 @@ const INITIAL_COMPONENTS: Partial<Components> = {
 
     if (isInline) {
       return (
-        <span
-          className={cn(
-            "bg-primary-foreground rounded-sm px-1 font-mono text-sm",
-            className
-          )}
-          {...props}
-        >
+        <code className={className} {...props}>
           {children}
-        </span>
+        </code>
       )
     }
 

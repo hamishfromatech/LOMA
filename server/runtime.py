@@ -115,18 +115,57 @@ class Runtime:
 
         return self.settings_payload()
 
-    def settings_payload(self) -> dict:
+    def models_payload(self) -> dict:
+        """Every model the picker may offer, discovered from Ollama itself.
+
+        A model whose capabilities could not be probed is kept: an unreachable
+        ``/api/show`` means "unknown", not "cannot chat", and filtering on it is
+        what empties the picker on a fresh machine.
+        """
         client = self.pipeline.client
-        models = []
+        error: str | None = None
         try:
-            models = [
-                model for model in client.list_models() if "completion" in model["capabilities"]
-            ]
-        except Exception as exc:  # noqa: BLE001 - settings must still render
+            discovered = client.list_models()
+        except Exception as exc:  # noqa: BLE001 - the picker must still render
             log.warning("could not list models: %s", exc)
+            discovered = []
+            error = str(exc)
+
+        usable = [
+            model
+            for model in discovered
+            if not model["capabilities"] or "completion" in model["capabilities"]
+        ]
+
+        # The configured model must always be selectable, even before it is
+        # pulled — otherwise the select renders blank while Ollama catches up.
+        if not any(model["name"] == self.settings.llm_model for model in usable):
+            usable.insert(
+                0,
+                {
+                    "name": self.settings.llm_model,
+                    "size_mb": 0.0,
+                    "family": "",
+                    "parameters": "",
+                    "quantization": "",
+                    "modified_at": "",
+                    "capabilities": [],
+                    "source": "preference",
+                },
+            )
+
+        return {
+            "models": usable,
+            "current": self.settings.llm_model,
+            "source": discovered[0]["source"] if discovered else ("ollama" if not error else ""),
+            "error": error,
+        }
+
+    def settings_payload(self) -> dict:
+        models = self.models_payload()["models"]
 
         try:
-            voices = client.voices()
+            voices = self.pipeline.client.voices()
         except Exception:  # noqa: BLE001
             voices = []
 

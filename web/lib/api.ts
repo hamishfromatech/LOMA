@@ -3,6 +3,7 @@ import type {
   ConversationSummary,
   McpOverview,
   MemoryPayload,
+  ModelsPayload,
   SettingsPayload,
   Status,
   StreamEvent,
@@ -22,6 +23,15 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function getStatus(): Promise<Status> {
   return json<Status>("/api/status")
+}
+
+/**
+ * Models installed locally, discovered by the API from Ollama's own listing
+ * (`/api/tags`` with a `/v1/models` fallback). Refetched whenever the picker
+ * opens, so a `ollama pull` shows up without a page reload.
+ */
+export function listModels(): Promise<ModelsPayload> {
+  return json<ModelsPayload>("/api/models")
 }
 
 export function resetConversation(): Promise<{ ok: boolean }> {
