@@ -48,14 +48,20 @@ from loma.audio import (
 from loma.chunking import SentenceChunker
 from loma.config import Settings
 from loma.control import ControlMatch, ControlRouter
-from loma.mcp_hub import MCPHub, ToolBatch, ToolCall, load_mcp_config
+from loma.mcp_hub import MCPHub, MCPTool, ToolBatch, ToolCall, load_mcp_config
 from loma.memory import MemoryGuard
 from loma.memory_store import MemoryStore
 from loma.ollama_client import OllamaClient
+from loma.skills import SkillStore
 from loma.stt import Transcriber, Transcript
 from loma.tool_router import NeedleRouter, ToolRoute
 
 log = logging.getLogger(__name__)
+
+#: The built-in tool that pulls a skill body into the context for one turn.
+SKILL_TOOL_NAME = "load_skill"
+#: Marks a tool as LOMA-owned rather than served by an MCP server.
+SKILL_TOOL_SERVER = "loma"
 
 #: Canned spoken replies for fast actions — no language model involved.
 FAST_REPLIES = {
@@ -134,6 +140,16 @@ class VoicePipeline:
         #: Long-term memory, injected into every turn. Set by the caller.
         self.memory: MemoryStore | None = None
 
+        #: Installed skills. The index is always in context; a body is only
+        #: fetched when the router asks for it.
+        self.skills: SkillStore | None = (
+            SkillStore(self.settings.skills_root, max_chars=self.settings.skill_max_chars)
+            if self.settings.skills_enabled
+            else None
+        )
+        #: Set by _tool_events when load_skill runs, consumed by the same turn.
+        self._skill_context = ""
+
     # -- lifecycle -----------------------------------------------------
     def close(self) -> None:
         self.tool_router.close()
@@ -151,12 +167,49 @@ class VoicePipeline:
         if self._tools_ready:
             return self.hub.available and self.tool_router.ready
         self._tools_ready = True
-        if not self.hub.configured:
-            log.debug("no mcp.json configured; running without tools")
+        if self.hub.configured and not self.hub.start():
             return False
-        if not self.hub.start():
+        tools = list(self.hub.tools)
+        skill_tool = self._skill_tool()
+        if skill_tool is not None:
+            tools.append(skill_tool)
+        if not tools:
+            log.debug("no tools and no skills; running without either")
             return False
-        return self.tool_router.load(self.hub.tools)
+        return self.tool_router.load(tools)
+
+    def _skill_tool(self) -> MCPTool | None:
+        """The built-in ``load_skill`` tool, or None when no skills exist.
+
+        Exposed as a normal tool so the router picks it the same way it picks an
+        MCP one, with one difference that matters: ``name`` is an enum of the
+        installed skills, so Needle cannot invent a skill name and a near-miss
+        cannot quietly load the wrong guide.
+        """
+        if self.skills is None:
+            return None
+        names = self.skills.names()
+        if not names:
+            return None
+        return MCPTool(
+            name=SKILL_TOOL_NAME,
+            description=(
+                "Load the full text of an installed skill. Call this before "
+                "doing a task a skill covers; the guide is not in context yet."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "enum": names,
+                        "description": "The skill to load, by name.",
+                    }
+                },
+                "required": ["name"],
+            },
+            server=SKILL_TOOL_SERVER,
+        )
 
     def reload_tools(self) -> bool:
         """Re-read mcp.json and reconnect. Used by the Settings page."""
@@ -258,6 +311,7 @@ class VoicePipeline:
             self.agent.memory_context = self.memory.as_context()
         else:
             self.agent.memory_context = ""
+        self.agent.skill_context = self._skill_note()
         chunker = SentenceChunker()
         speaker = (
             Speaker(self._tts_stream(None), sample_rate=self.settings.tts_sample_rate)
@@ -392,7 +446,10 @@ class VoicePipeline:
         calls: list[ToolCall] = []
         for request in route.requests:
             call_started = time.perf_counter()
-            result = self.hub.call(request.tool.name, request.arguments)
+            if request.tool.server == SKILL_TOOL_SERVER:
+                result = self._run_skill_tool(request.arguments)
+            else:
+                result = self.hub.call(request.tool.name, request.arguments)
             latency = time.perf_counter() - call_started
             log.info(
                 "tool %s(%s) -> %s",
@@ -417,6 +474,40 @@ class VoicePipeline:
             }
 
         return ToolBatch(calls=calls) if calls else None
+
+    def _skill_note(self) -> str:
+        """The skill note for this turn: the index, plus any body just loaded.
+
+        Consumed exactly once — the loaded body is cleared afterwards so a guide
+        cannot silently ride along for the rest of the conversation and eat the
+        window.
+        """
+        if self.skills is None:
+            return ""
+        index = self.skills.as_index()
+        body = self._skill_context
+        self._skill_context = ""
+        return "\n\n".join(part for part in (index, body) if part)
+
+    def _run_skill_tool(self, arguments: dict) -> str:
+        """Resolve ``load_skill``. Returns a short note for the tool card.
+
+        The body itself is not returned as the tool result: tool results are
+        flattened into one line by ``ToolBatch.as_prompt`` and capped, which
+        would mangle a 200-line guide. Instead the body is parked in
+        ``_skill_context`` and injected as its own system note, where the model
+        reads it as instructions rather than as a fact about the user.
+        """
+        if self.skills is None:
+            return "error: skills are disabled"
+        name = str(arguments.get("name") or "").strip()
+        body = self.skills.load(name)
+        if not body:
+            available = ", ".join(self.skills.names()) or "none"
+            return f"error: no skill named {name!r}. Installed: {available}"
+        self._skill_context = self.skills.as_context(name)
+        log.info("skill loaded: %s (%d chars)", name, len(body))
+        return f"loaded the {name!r} skill into context ({len(body)} characters)"
 
     def _audio_event(self, sentence: str, audio_format: str = "wav") -> dict:
         """One spoken sentence.

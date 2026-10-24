@@ -60,6 +60,8 @@ class Agent:
         self.last_compaction: Compaction | None = None
         #: Long-term memory, injected per request and never persisted here.
         self.memory_context = ""
+        #: The skill index every turn, plus any skill body loaded this turn.
+        self.skill_context = ""
         self._messages: list[dict[str, str]] = [
             {"role": "system", "content": settings.system_prompt}
         ]
@@ -122,6 +124,11 @@ class Agent:
         if self.memory_context:
             # Right after the persona prompt, before the conversation.
             messages.insert(1, {"role": "system", "content": self.memory_context})
+        if self.skill_context:
+            # Skills are instructions, so they sit after the persona and after
+            # memory: a loaded guide outranks what the assistant remembers.
+            messages.insert(2 if self.memory_context else 1,
+                            {"role": "system", "content": self.skill_context})
         if extra_context:
             messages.append({"role": "system", "content": extra_context})
 

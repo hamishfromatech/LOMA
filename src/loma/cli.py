@@ -48,6 +48,7 @@ def main(argv: list[str] | None = None) -> int:
         "ask": cmd_ask,
         "route": cmd_route,
         "tools": cmd_tools,
+        "skills": cmd_skills,
         "context": cmd_context,
         "transcribe": cmd_transcribe,
         "speak": cmd_speak,
@@ -102,6 +103,11 @@ def build_parser() -> argparse.ArgumentParser:
     tools = sub.add_parser("tools", help="list MCP tools and test the router")
     tools.add_argument("--probe", metavar="TEXT", default=None, help="route this sentence")
     tools.add_argument("--json", action="store_true")
+
+    # skills ----------------------------------------------------------
+    skills = sub.add_parser("skills", help="list installed skills, or show one")
+    skills.add_argument("--show", metavar="NAME", default=None, help="print a skill's body")
+    skills.add_argument("--json", action="store_true")
 
     # context ---------------------------------------------------------
     context = sub.add_parser("context", help="show the context window policy")
@@ -315,6 +321,51 @@ def cmd_tools(args, settings: Settings) -> int:
     finally:
         router.close()
         hub.stop()
+
+
+def cmd_skills(args, settings: Settings) -> int:
+    """List the skills LOMA can load, or print one in full."""
+    from loma.skills import SkillStore
+
+    if not settings.skills_enabled:
+        print("skills are disabled (LOMA_SKILLS_ENABLED=0)")
+        return 1
+
+    store = SkillStore(settings.skills_root, max_chars=settings.skill_max_chars)
+
+    if args.show:
+        body = store.load(args.show)
+        if not body:
+            available = ", ".join(store.names()) or "none"
+            print(f"no skill named {args.show!r}. Installed: {available}", file=sys.stderr)
+            return 1
+        print(body)
+        return 0
+
+    skills = store.scan()
+    if not skills:
+        print(f"no skills installed in {settings.skills_root}")
+        print("Add skills/<name>/SKILL.md — see skills/write-a-skill/SKILL.md.")
+        return 1
+
+    if args.json:
+        print(json.dumps(
+            [
+                {"name": s.name, "description": s.description, "path": str(s.path)}
+                for s in skills
+            ],
+            indent=2,
+        ))
+        return 0
+
+    print(f"{len(skills)} skill(s) in {settings.skills_root}")
+    width = max(len(s.name) for s in skills)
+    for skill in skills:
+        print(f"  {skill.name:<{width}}  {skill.short_description}")
+    print()
+    print("The index above is in every prompt; a body is loaded only when asked for.")
+    print("Show one with: loma skills --show <name>")
+    return 0
 
 
 def cmd_context(args, settings: Settings) -> int:

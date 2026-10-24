@@ -120,6 +120,13 @@ class Settings:
     # Ask the model, after a turn, whether the user said something durable.
     memory_auto_extract: bool = True
 
+    # Skills: directories of SKILL.md instructions, loaded on demand.
+    skills_enabled: bool = True
+    skills_dir: Path = _PROJECT_ROOT / "skills"
+    # Characters of a skill body that may be injected at once. A skill longer
+    # than this is truncated with a pointer to the file, never silently cut.
+    skill_max_chars: int = 6000
+
     # Safety
     # 3 GB, measured: 1.3 GB LLM + 45 MB Needle + 121 MB TTS + ~100 MB Python.
     # See docs/RAM_BUDGET.md.
@@ -135,6 +142,11 @@ class Settings:
     @property
     def conversations_dir(self) -> Path:
         return self.data_dir / "conversations"
+
+    @property
+    def skills_root(self) -> Path:
+        """Where skill directories live. One folder, one SKILL.md."""
+        return self.skills_dir if self.skills_dir.is_absolute() else _PROJECT_ROOT / self.skills_dir
 
     @property
     def whisper_dir(self) -> Path:
@@ -204,6 +216,9 @@ class Settings:
             data_dir=data_dir,
             memory_enabled=_env("LOMA_MEMORY_ENABLED", True),
             memory_auto_extract=_env("LOMA_MEMORY_AUTO_EXTRACT", True),
+            skills_enabled=_env("LOMA_SKILLS_ENABLED", True),
+            skills_dir=Path(_env("LOMA_SKILLS_DIR", str(_PROJECT_ROOT / "skills"))),
+            skill_max_chars=_env("LOMA_SKILL_MAX_CHARS", 6000),
             tool_min_confidence=_env("LOMA_TOOL_MIN_CONFIDENCE", 0.50),
             tool_max_tools=_env("LOMA_TOOL_MAX_TOOLS", 40),
             stt_model=_env("LOMA_STT_MODEL", "tiny"),

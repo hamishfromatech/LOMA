@@ -198,6 +198,79 @@ matter most:
 
 ---
 
+## Skills — teaching it a procedure
+
+A skill is a `SKILL.md` in a folder, with frontmatter:
+
+```
+skills/
+  write-an-mcp-server/
+    SKILL.md
+  write-a-skill/
+    SKILL.md
+```
+
+```markdown
+---
+name: my-skill
+description: One sentence. Say when to use it, not what it is.
+---
+
+# My skill
+
+1. First step.
+2. Second step.
+```
+
+The split is the whole design:
+
+| | When | Cost |
+|---|---|---|
+| **`name` + `description`** | every turn, as an index entry | ~20 tokens per skill |
+| **The body** | only when the model calls `load_skill` | up to `LOMA_SKILL_MAX_CHARS` (6,000) |
+
+So a dozen skills costs less context than one tool schema, and a 200-line guide
+stays out of the window until the moment it is relevant. The body enters as a
+system note, is used for that turn, and is dropped — a loaded guide can't ride
+along for the rest of the conversation.
+
+`load_skill` is a normal tool as far as the router is concerned, with one
+difference: its `name` argument is an **enum of the installed skills**, so a
+skill cannot be hallucinated and a near-miss cannot quietly load the wrong guide.
+
+```bash
+loma skills                       # the index, and what it costs
+loma skills --show write-a-skill  # the body, as the model sees it
+```
+
+Two skills ship with the repo, both about extending LOMA:
+[`write-an-mcp-server`](skills/write-an-mcp-server/SKILL.md) and
+[`write-a-skill`](skills/write-a-skill/SKILL.md). Ask it *"how do I add a tool?"*
+and it loads the first one and walks you through it.
+
+---
+
+## Extend it and send it back
+
+The two ways to make LOMA do something it can't do today are a **tool** and a
+**skill**, and they are deliberately different:
+
+- **A tool answers questions about the world.** Weather, files, arithmetic, a
+  local database. It is an MCP server, it returns data, and it never influences
+  how the assistant talks.
+- **A skill changes how it works.** A procedure, a house style, the steps of a
+  task you do often. It is a Markdown file, it is instructions, and it changes
+  behaviour rather than facts.
+
+Both are small enough to write in an afternoon, and both are the point: a
+128k-window assistant that runs offline is only as useful as the things you plug
+into it. If you build one that others would want, open a PR — servers in
+`examples/`, skills in `skills/`. Two rules for anything contributed: **it must
+work with no network at runtime**, and **one tool per action** (see
+[`docs/ARCHITECTURE.md#tool-design`](docs/ARCHITECTURE.md)).
+
+---
+
 ## Context policy and compaction
 
 ```
@@ -219,6 +292,7 @@ Compaction fires on Ollama's real `prompt_eval_count`, not a character guess.
 | `loma ask "…"` | One text turn through the whole stack |
 | `loma route "…"` | Control match + Needle routing, no LLM (alias `decide`) |
 | `loma tools [--probe "…"]` | List MCP tools / test the router |
+| `loma skills [--show NAME]` | List installed skills, or print one |
 | `loma context` | Context window policy |
 | `loma transcribe file.wav` | Speech to text only |
 | `loma speak "hello"` | Text to speech only |
@@ -247,12 +321,14 @@ src/loma/
   memory_store.py    MEMORY.md
   preferences.py     what the Settings page persists
   memory.py          RAM accounting
+  skills.py          SKILL.md discovery, the index, on-demand loading
   cli.py             the `loma` command
 server/              Flask API
 web/                 Next.js + prompt-kit UI
 examples/            a demo MCP server
+skills/              SKILL.md instructions, loaded on demand
 scripts/             setup, model download, memory benchmark
-tests/               135 tests, no network required
+tests/               153 tests, no network required
 docs/                architecture, RAM, student labs, troubleshooting
 ```
 
@@ -330,6 +406,11 @@ run before any model, resolve in microseconds, and never allocate.
 **Add a CLI command** — `cli.py`, one function per verb, and it must call into
 `pipeline` rather than reimplementing a turn. Keep `loma <verb> --help` honest.
 
+**Add a skill** — `skills/<name>/SKILL.md` with `name` and `description`
+frontmatter. The index is injected every turn and the body only on request, so the
+description is a *trigger* ("use when the user…"), not a summary. Test it with
+`loma skills --show <name>` and `loma ask "…" --no-speak`.
+
 **Add a setting** — `config.py` only, typed, env-driven, with a sane default and
 a test. The Settings page reads the same object; don't let the web layer own a
 second source of truth.
@@ -344,7 +425,7 @@ only place that should know the endpoint shapes.
   `loma bench` and `scripts/bench_memory.py`. If you change a model, a window or a
   thread, re-run them and update [`docs/RAM_BUDGET.md`](docs/RAM_BUDGET.md) — don't
   eyeball it.
-- **Add a test with the change.** 135 tests run in 0.17s; there is no excuse not
+- **Add a test with the change.** 153 tests run in 0.17s; there is no excuse not
   to. A fast suite is a feature.
 - **Leave the offline promise intact.** Nothing may fetch at runtime. New
   dependencies that phone home are a design break, not a detail.
@@ -353,13 +434,13 @@ only place that should know the endpoint shapes.
 
 ## Tests
 
-The whole suite is **135 tests in under a second**, and it needs no network, no
+The whole suite is **153 tests in under a second**, and it needs no network, no
 models and no Ollama. That is deliberate: the parts worth testing are the parts
 that decide things — the control lexicon, Needle's routing, compaction, the
 memory store — not the model weights.
 
 ```bash
-make test    # 135 tests, no network, no models required
+make test    # 153 tests, no network, no models required
 make lint    # ruff over src, tests and server, plus eslint in web/
 ```
 
