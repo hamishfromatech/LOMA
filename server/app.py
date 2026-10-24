@@ -141,6 +141,26 @@ def create_app() -> Flask:
         )
         return _stream_turn(runtime, conversation_id, message, speak, images)
 
+    # -- first run -----------------------------------------------------
+    @app.get("/api/onboarding")
+    def get_onboarding() -> Response:
+        return jsonify(get_runtime().onboarding_payload())
+
+    @app.post("/api/onboarding")
+    def post_onboarding() -> Response:
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return jsonify({"error": "expected an object of answers"}), 400
+        return jsonify(get_runtime().complete_onboarding(payload))
+
+    @app.post("/api/onboarding/skip")
+    def skip_onboarding() -> Response:
+        return jsonify(get_runtime().skip_onboarding())
+
+    @app.post("/api/onboarding/reset")
+    def reset_onboarding() -> Response:
+        return jsonify(get_runtime().reset_onboarding())
+
     # -- memory --------------------------------------------------------
     @app.get("/api/memory")
     def get_memory() -> Response:

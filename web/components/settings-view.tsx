@@ -23,6 +23,7 @@ import { Separator } from "@/components/ui/separator"
 import {
   addMcpServer,
   clearMemory,
+  resetOnboarding,
   getSettings,
   previewVoice,
   reloadMcp,
@@ -44,8 +45,10 @@ import {
   Server,
   Trash2,
   TriangleAlert,
+  Wand2,
 } from "lucide-react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { useCallback, useEffect, useState } from "react"
 
 function plural(count: number, word: string) {
@@ -86,6 +89,7 @@ function Section({
 }
 
 export function SettingsView() {
+  const router = useRouter()
   const [settings, setSettings] = useState<SettingsPayload | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -469,6 +473,29 @@ export function SettingsView() {
               Auto-extraction is {settings.memory.auto_extract ? "on" : "off"}.
             </p>
             <div className="flex gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={async () => {
+                  setBusy("onboarding")
+                  try {
+                    await resetOnboarding()
+                    router.push("/")
+                  } finally {
+                    setBusy(null)
+                  }
+                }}
+                disabled={busy !== null}
+                className="text-loma-faint hover:text-loma-ink"
+                title="Walk through the setup questions again"
+              >
+                {busy === "onboarding" ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Wand2 className="size-3.5" />
+                )}
+                Setup again
+              </Button>
               <Button
                 variant="ghost"
                 size="sm"

@@ -167,6 +167,24 @@ export type Conversation = {
   messages: { role: "user" | "assistant"; content: string }[]
 }
 
+export type OnboardingState = {
+  needed: boolean
+  skipped: boolean
+  name: string
+}
+
+export type OnboardingResult = {
+  state: OnboardingState & { facts_stored?: number }
+  summary: {
+    name?: string
+    role?: string
+    goals?: string[]
+    style?: string
+    notes?: string
+  }
+  memory: MemoryPayload
+}
+
 export type MemoryPayload = {
   enabled: boolean
   auto_extract: boolean

@@ -132,6 +132,10 @@ A ChatGPT/Open-WebUI-shaped interface built on
   reload keeps the words and loses the picture.
 - **Spoken replies** — Phonon generates one WAV per sentence during the stream;
   the browser queues and plays them.
+- **First-run setup** — five questions (name, what you work on, what you want
+  help with, how you like to be answered, anything else) written straight into
+  `MEMORY.md` as facts. Skippable, re-runnable from Settings, and it changes the
+  greeting: "Good evening, Hamish."
 - **Settings page** — language model, voice (with preview), MCP servers
   (add/remove/reconnect), and a Markdown memory editor.
 
@@ -145,6 +149,8 @@ A ChatGPT/Open-WebUI-shaped interface built on
 | `GET/PATCH/DELETE` | `/api/conversations/<id>` | open / rename / delete |
 | `POST` | `/api/conversations/<id>/chat` | one turn, Server-Sent Events; optional `images` (base64, ≤4, ≤8 MB each) |
 | `GET/PUT/DELETE` | `/api/memory` | read / write / clear `MEMORY.md` |
+| `GET/POST` | `/api/onboarding` | first-run state, and the answers as memory facts |
+| `POST` | `/api/onboarding/skip` · `/reset` | decline setup, or ask for it again |
 | `POST` | `/api/transcribe` | audio → text (faster-whisper) |
 | `POST` | `/api/speak` | text → WAV (Phonon) |
 | `GET/POST` | `/api/settings` | current settings, available models and voices |

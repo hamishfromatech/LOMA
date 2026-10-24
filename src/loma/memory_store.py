@@ -95,9 +95,11 @@ class MemoryStore:
             return ""
         body = "\n".join(f"- {fact}" for fact in facts)
         return (
-            "What you remember about the user from earlier conversations:\n"
+            "Facts about the person you are talking to. These are theirs, not "
+            "yours — you are LOMA, and you are not them.\n"
             f"{body}\n"
-            "Use this only where it is relevant. Do not recite the list back."
+            "Speak to them in the second person (\"you\"). Use a fact only where "
+            "it is relevant, and do not recite the list back."
         )
 
     def as_markdown(self) -> str:

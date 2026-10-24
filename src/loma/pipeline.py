@@ -439,6 +439,9 @@ class VoicePipeline:
                 else "I already knew that one."
             )
 
+        if intent in {"identity", "about"}:
+            text = self._memory_reply(intent)
+
         if intent == "reset":
             self.agent.reset()
             self.last_reply = ""
@@ -564,6 +567,33 @@ class VoicePipeline:
         except Exception:  # noqa: BLE001 - never block a turn on discovery
             return False
         return "vision" in info["capabilities"]
+
+    def _memory_reply(self, intent: str) -> str:
+        """Answer "who am I" / "what do you know about me" from the file.
+
+        Deterministic on purpose. The 0.8B reads "your name is Hamish" and says
+        "I am Hamish" — it takes the user's facts as its own — so the one question
+        that is entirely about attribution is answered without a model.
+        """
+        facts = self.memory.facts() if self.memory is not None else []
+        if not facts:
+            return (
+                "You haven't told me anything about yourself yet. "
+                "You can run setup again from Settings."
+            )
+
+        if intent == "identity":
+            for fact in facts:
+                lowered = fact.lower()
+                for prefix in ("your name is ", "prefers to be called ", "call me "):
+                    if lowered.startswith(prefix):
+                        return f"You're {fact[len(prefix):].strip()}."
+            return "You haven't told me your name. You can set it in Settings."
+
+        listed = facts[:4]
+        spoken = "; ".join(fact[0].lower() + fact[1:] if fact else fact for fact in listed)
+        more = "" if len(facts) <= 4 else f", and {len(facts) - 4} more"
+        return f"Here is what I know: {spoken}{more}."
 
     def _skill_note(self) -> str:
         """The body of a skill loaded this turn, and nothing else.

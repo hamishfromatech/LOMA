@@ -3,6 +3,7 @@
 import { AnswerMessage, UserMessage } from "@/components/answer"
 import { LomaMark } from "@/components/brand"
 import { Composer } from "@/components/composer"
+import { Onboarding, type OnboardingAnswers } from "@/components/onboarding"
 import { ChatsDrawer } from "@/components/sidebar"
 import { IconRail } from "@/components/icon-rail"
 import { StatusBar } from "@/components/status-bar"
@@ -14,14 +15,17 @@ import {
 } from "@/components/ui/chat-container"
 import { ScrollButton } from "@/components/ui/scroll-button"
 import {
+  completeOnboarding,
   createConversation,
   deleteConversation,
+  getOnboarding,
   getConversation,
   getSettings,
   getStatus,
   listConversations,
   listModels,
   renameConversation,
+  skipOnboarding,
   streamChat,
   updateSettings,
 } from "@/lib/api"
@@ -161,11 +165,19 @@ export function ChatView() {
   const [chatsOpen, setChatsOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [hello, setHello] = useState("Hello")
+  const [onboarding, setOnboarding] = useState<{
+    needed: boolean
+    name: string
+  } | null>(null)
+  const [justOnboarded, setJustOnboarded] = useState(false)
   const abort = useRef<AbortController | null>(null)
   const { enqueue, unlock, stop } = useAudioQueue()
 
   useEffect(() => {
     setHello(greeting())
+    void getOnboarding()
+      .then((state) => setOnboarding({ needed: state.needed, name: state.name }))
+      .catch(() => setOnboarding({ needed: false, name: "" }))
   }, [])
 
   const refreshStatus = useCallback(async () => {
@@ -227,6 +239,21 @@ export function ChatView() {
     const timer = window.setInterval(refreshStatus, 10_000)
     return () => window.clearInterval(timer)
   }, [refreshStatus, refreshConversations, refreshModels])
+
+  const finishOnboarding = useCallback(async (answers: OnboardingAnswers) => {
+    const result = await completeOnboarding(answers)
+    setOnboarding({ needed: false, name: result.summary.name || "" })
+    setJustOnboarded(true)
+    setSettings((current) =>
+      current ? { ...current, memory: result.memory } : current,
+    )
+    void refreshConversations()
+  }, [refreshConversations])
+
+  const skipSetup = useCallback(async () => {
+    await skipOnboarding()
+    setOnboarding({ needed: false, name: "" })
+  }, [])
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -485,6 +512,15 @@ export function ChatView() {
       ? storedTitle
       : firstLine.trim().split("\n")[0].slice(0, 64) || "New chat"
 
+  if (onboarding?.needed) {
+    return (
+      <Onboarding
+        onComplete={finishOnboarding}
+        onSkip={skipSetup}
+      />
+    )
+  }
+
   return (
     <div className="flex h-dvh overflow-hidden bg-loma-bg text-loma-ink">
       <IconRail
@@ -525,11 +561,24 @@ export function ChatView() {
               <div className="mb-8 flex flex-col items-center text-center">
                 <LomaMark size={44} className="mb-5" />
                 <h1 className="text-[27px] font-medium tracking-[-0.02em] text-loma-ink sm:text-[31px]">
-                  {hello}.
+                  {onboarding?.name ? `${hello}, ${onboarding.name}.` : `${hello}.`}
                 </h1>
                 <p className="mt-2 max-w-[440px] text-[13.5px] leading-relaxed text-loma-faint">
-                  Ask anything. Every model, tool and memory file stays on this
-                  machine — no network, no API bills.
+                  {justOnboarded ? (
+                    <>
+                      I have written that to memory. Ask me anything — you can
+                      change it later in{" "}
+                      <a href="/settings" className="text-loma-dim underline decoration-loma-accent/40 underline-offset-2 hover:text-loma-ink">
+                        Settings
+                      </a>
+                      .
+                    </>
+                  ) : (
+                    <>
+                      Ask anything. Every model, tool and memory file stays on this
+                      machine — no network, no API bills.
+                    </>
+                  )}
                 </p>
               </div>
 

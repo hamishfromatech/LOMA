@@ -1,3 +1,5 @@
+import pytest
+
 from loma.control import PHRASES, ControlRouter, normalise
 
 
@@ -118,5 +120,44 @@ def test_as_dict_is_json_shaped():
 
 
 def test_every_intent_has_phrases():
-    assert set(PHRASES) == {"stop", "reset", "repeat", "exit"}
+    assert set(PHRASES) == {
+        "stop",
+        "reset",
+        "repeat",
+        "exit",
+        "identity",
+        "about",
+    }
     assert all(PHRASES[i] for i in PHRASES)
+
+
+class TestIdentityIntents:
+    """Who-is-who questions never reach a model.
+
+    A 0.8B reading "your name is Hamish" answers "I am Hamish" — it takes the
+    user's facts as its own — so identity is a lookup, not a generation.
+    """
+
+    @pytest.mark.parametrize(
+        "text",
+        ["what is my name?", "what's my name", "who am i", "what should you call me"],
+    )
+    def test_identity_phrases(self, text):
+        from loma.control import ControlRouter
+
+        assert ControlRouter().match(text).intent == "identity"
+
+    @pytest.mark.parametrize(
+        "text",
+        ["what do you know about me?", "what do you remember", "tell me about me"],
+    )
+    def test_about_phrases(self, text):
+        from loma.control import ControlRouter
+
+        assert ControlRouter().match(text).intent == "about"
+
+    def test_an_ordinary_question_is_still_an_answer(self):
+        from loma.control import ControlRouter
+
+        assert ControlRouter().match("who are you?").intent == "answer"
+        assert ControlRouter().match("what time is it?").intent == "answer"

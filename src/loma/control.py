@@ -48,6 +48,26 @@ PHRASES: dict[str, frozenset[str]] = {
             "new conversation", "new chat",
         }
     ),
+    # Identity lookups are answered from the memory file, not generated. A 0.8B
+    # asked "what is my name?" answers "I am Hamish" — it takes the user's facts
+    # as its own — so the one question about who is who never reaches a model.
+    # Written in normalised form: fillers ("you", "that", "the") are removed
+    # before matching, so "what do you know about me" is stored as "what do know
+    # about me".
+    "identity": frozenset(
+        {
+            "what is my name", "what's my name", "whats my name",
+            "do know my name", "do know me", "who am i",
+            "what should call me", "what is call me",
+        }
+    ),
+    "about": frozenset(
+        {
+            "what do know about me", "what do remember about me",
+            "what do remember", "what have remembered",
+            "tell me about me", "what do know about",
+        }
+    ),
     "repeat": frozenset(
         {
             "repeat", "repeat it", "repeat that", "say again", "say it again",
@@ -68,7 +88,7 @@ PHRASES: dict[str, frozenset[str]] = {
 
 #: Checked in this order: a phrase that means "end the session" must win over one
 #: that only means "be quiet".
-_ORDER = ("exit", "reset", "repeat", "stop")
+_ORDER = ("exit", "reset", "identity", "about", "repeat", "stop")
 
 #: "Remember that ..." is an open-ended command, so it is a prefix rather than a
 #: phrase. Matched against the raw utterance, before filler removal, because the

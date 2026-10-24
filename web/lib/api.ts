@@ -4,6 +4,8 @@ import type {
   McpOverview,
   MemoryPayload,
   ModelsPayload,
+  OnboardingResult,
+  OnboardingState,
   SettingsPayload,
   Status,
   StreamEvent,
@@ -222,6 +224,36 @@ export async function deleteConversation(id: string): Promise<void> {
     { method: "DELETE" },
   )
   if (!response.ok) throw new Error(await response.text())
+}
+
+// ---------------------------------------------------------------------------
+// First run
+// ---------------------------------------------------------------------------
+
+export function getOnboarding(): Promise<OnboardingState> {
+  return json<OnboardingState>("/api/onboarding")
+}
+
+export function completeOnboarding(answers: {
+  name: string
+  role: string
+  goals: string[]
+  style: string
+  notes: string
+}): Promise<OnboardingResult> {
+  return json<OnboardingResult>("/api/onboarding", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(answers),
+  })
+}
+
+export function skipOnboarding(): Promise<OnboardingResult> {
+  return json<OnboardingResult>("/api/onboarding/skip", { method: "POST" })
+}
+
+export function resetOnboarding(): Promise<OnboardingState> {
+  return json<OnboardingState>("/api/onboarding/reset", { method: "POST" })
 }
 
 // ---------------------------------------------------------------------------

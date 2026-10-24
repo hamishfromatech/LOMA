@@ -23,6 +23,15 @@ from loma.context import describe_policy
 from loma.conversations import ConversationStore
 from loma.memory import snapshot
 from loma.memory_store import MemoryStore
+from loma.onboarding import (
+    completed_state,
+    facts_from,
+    read_state,
+    skipped_state,
+    state_path,
+    summarise,
+    write_state,
+)
 from loma.pipeline import StopLoop, VoicePipeline
 from loma.preferences import save_preferences
 
@@ -31,21 +40,74 @@ log = logging.getLogger(__name__)
 #: Cheap gate before spending a generation on memory extraction.
 _PERSONAL = re.compile(r"\b(i|i'm|im|i've|my|me|mine|we|our|us)\b", re.IGNORECASE)
 
+
+#: A fact is a statement. These are the shapes that are not statements.
+_QUESTION_WORD = re.compile(
+    r"^(what|why|how|when|where|who|which|do|does|did|can|could|would|should|"
+    r"is|are|am|was|were|tell|show|give)\b",
+    re.IGNORECASE,
+)
+#: Meta-sentences about the conversation are not facts about the person.
+_META = re.compile(
+    r"\b(you asked|user asked|you said|you want to know|you are asking|"
+    r"you were asking)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_fact(fact: str, quote: str) -> bool:
+    """Reject questions and meta-sentences dressed up as remembered facts.
+
+    Verbatim evidence stops a fact being invented. It does not stop the model
+    storing the user's *question* as though it were a statement — "What is your
+    name?" and "You asked what I know about you" both arrived with perfectly
+    accurate quotes attached.
+    """
+    text = fact.strip()
+    if not text:
+        return False
+    if "?" in text or _QUESTION_WORD.match(text) or _META.search(text):
+        return False
+    # If the sentence the model quoted was itself a question, it is not a fact.
+    return not quote.strip().endswith("?")
+
+
+def _quote_appears(quote: str, text: str) -> bool:
+    """Is the model's evidence really in what the user said?
+
+    Compared on collapsed, lower-cased text so that punctuation and line breaks
+    cannot fail an honest quote — only an invented one.
+    """
+    def normalise(value: str) -> str:
+        return " ".join(value.lower().split())
+
+    needle = normalise(quote)
+    # An empty quote matches everything; refuse rather than pass by accident.
+    return bool(needle) and needle in normalise(text)
+
 MEMORY_SCHEMA = {
     "type": "object",
     "properties": {
         "worth_remembering": {"type": "boolean"},
         "fact": {"type": "string"},
+        # The model must show its evidence. A quote that is not actually in the
+        # user's message means the "fact" was invented, and is thrown away —
+        # which is what stops a story request from becoming a biography.
+        "quote": {"type": "string"},
     },
-    "required": ["worth_remembering", "fact"],
+    "required": ["worth_remembering", "fact", "quote"],
 }
 
 MEMORY_PROMPT = (
-    "You decide whether a sentence contains a durable fact about the user that "
-    "is worth remembering in a later conversation: their name, where they live, "
-    "what they do, a preference, a project, a constraint. Ignore questions, "
-    "one-off requests, and anything about the assistant. Reply with JSON only; "
-    "write the fact as one short third-person sentence."
+    "You decide whether the user stated a durable fact about themselves that is "
+    "worth remembering in a later conversation: their name, where they live, what "
+    "they do, a preference, a project, a constraint.\n\n"
+    "Only facts the user stated about themselves, in their own words. Never "
+    "infer from a story, a hypothetical, an example, or a request — asking for a "
+    "story about a lighthouse says nothing about the user.\n\n"
+    "Reply with JSON only. `quote` must be copied verbatim from the user's "
+    "message: the exact words that support the fact. If you cannot quote it, set "
+    "worth_remembering to false."
 )
 
 
@@ -114,6 +176,58 @@ class Runtime:
                 self.pipeline.client.unload(previous_model)
 
         return self.settings_payload()
+
+    # -- first run -----------------------------------------------------
+    def onboarding_payload(self) -> dict:
+        """Whether to show setup, and the name to greet with if we know it."""
+        state = read_state(self.settings.data_dir)
+        name = str(state.get("name") or "")
+        if not name:
+            # A name can also arrive from an older memory file, or from someone
+            # who skipped the wizard and later said "remember that my name is …".
+            for fact in self.memory.facts():
+                lowered = fact.lower()
+                if "called " in lowered:
+                    name = fact.split("called ", 1)[1].strip()
+                    break
+                if lowered.startswith("my name is "):
+                    name = fact[len("my name is ") :].strip()
+                    break
+        return {
+            "needed": not bool(state.get("onboarded")),
+            "skipped": bool(state.get("skipped")),
+            "name": name,
+        }
+
+    def complete_onboarding(self, answers: dict) -> dict:
+        stored = 0
+        for fact in facts_from(answers):
+            if self.memory.append(fact, source="onboarding"):
+                stored += 1
+
+        state = completed_state(answers, stored)
+        write_state(self.settings.data_dir, state)
+        log.info("onboarding complete: %s fact(s) stored", stored)
+        return {
+            "state": state,
+            "summary": summarise(answers),
+            "memory": self.memory_payload(),
+        }
+
+    def skip_onboarding(self) -> dict:
+        write_state(self.settings.data_dir, skipped_state())
+        return {"state": skipped_state(), "summary": {}, "memory": self.memory_payload()}
+
+    def reset_onboarding(self) -> dict:
+        """Forget that setup ran, so the wizard can be walked again.
+
+        Facts already in memory are kept: re-running setup is about the answers,
+        not about erasing what LOMA learned since.
+        """
+        path = state_path(self.settings.data_dir)
+        if path.exists():
+            path.unlink()
+        return self.onboarding_payload()
 
     def models_payload(self) -> dict:
         """Every model the picker may offer, discovered from Ollama itself.
@@ -297,6 +411,16 @@ class Runtime:
         fact = str(result.get("fact", "")).strip()
         if len(fact) < 8:
             return None
+
+        quote = " ".join(str(result.get("quote", "")).split()).strip(" .\u201c\u201d\"'")
+        if not quote or not _quote_appears(quote, user_text):
+            log.info("memory candidate rejected: no verbatim evidence (%r)", fact[:60])
+            return None
+
+        if not _looks_like_fact(fact, quote):
+            log.info("memory candidate rejected: not a statement (%r)", fact[:60])
+            return None
+
         return fact if self.memory.append(fact, source="auto") else None
 
     # -- MCP -----------------------------------------------------------
