@@ -1,5 +1,7 @@
 # LOMA — Local Offline Mini Assistant
 
+By [hamishfromatech](https://github.com/hamishfromatech)
+
 ![tests](https://github.com/hamishfromatech/LOMA/actions/workflows/test.yml/badge.svg)
 
 A complete voice assistant that runs on your own machine with **no network
