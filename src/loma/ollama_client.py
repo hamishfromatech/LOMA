@@ -289,6 +289,15 @@ class OllamaClient:
             )
         return []
 
+    def supports_structured_outputs(self) -> bool:
+        """Can this model be constrained to a JSON schema?
+
+        Per Ollama's docs, the cloud does not support ``format``. A cloud model is
+        identified by its tag rather than probed, because probing means sending a
+        request that is guaranteed to fail.
+        """
+        return ":cloud" not in self.settings.llm_model.lower()
+
     def unload(self, model: str) -> None:
         """Ask Ollama to drop a model from memory now."""
         try:
@@ -316,6 +325,7 @@ class OllamaClient:
         max_tokens: int | None = None,
         on_usage: Callable[[dict[str, int]], None] | None = None,
         on_thinking: Callable[[str], None] | None = None,
+        response_format: dict[str, Any] | str | None = None,
     ) -> Iterator[str]:
         """Yield assistant text fragments as the model produces them.
 
@@ -341,6 +351,17 @@ class OllamaClient:
                 "temperature": self.settings.temperature,
             },
         }
+        if response_format is not None:
+            if self.supports_structured_outputs():
+                payload["format"] = response_format
+            else:
+                # Ollama's cloud does not implement `format`; asking anyway fails
+                # the whole turn, so drop the constraint and keep the answer.
+                log.warning(
+                    "structured output requested for %s, which does not support it",
+                    self.settings.llm_model,
+                )
+
         with self._http.stream("POST", "/api/chat", json=payload) as response:
             _raise_for_status(response, streamed=True)
             for line in response.iter_lines():

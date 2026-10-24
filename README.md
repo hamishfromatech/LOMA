@@ -49,7 +49,10 @@ On an 8 GB Apple M2, with a 128k context window:
 | Orchestration | Python + numpy | 77 MB |
 | **Total** | | **1692 MB** |
 
-Full detail, including how to re-measure: [`docs/RAM_BUDGET.md`](docs/RAM_BUDGET.md).
+What LOMA asks of a model, what Ollama actually reports, and the capabilities that
+were measured and rejected: [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md).
+
+Full detail on memory, including how to re-measure: [`docs/RAM_BUDGET.md`](docs/RAM_BUDGET.md).
 On a machine with **more than 8 GB**, the window becomes **256k** automatically.
 
 ---

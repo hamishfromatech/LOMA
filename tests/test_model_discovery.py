@@ -246,3 +246,73 @@ class TestThinkingControls:
             {("GET", "/api/tags"): Response(thin), ("POST", "/api/show"): rich}
         )
         assert client.list_models()[0]["thinking"] is None
+
+
+class StreamStub(StubHTTP):
+    """Adds the streaming context manager chat_stream uses."""
+
+    class _Response:
+        def __init__(self, lines):
+            self._lines = lines
+            self.is_success = True
+
+        def iter_lines(self):
+            return iter(self._lines)
+
+    def __init__(self, lines):
+        super().__init__({})
+        self._lines = lines
+        self.payload: dict | None = None
+
+    class _Ctx:
+        def __init__(self, outer):
+            self.outer = outer
+
+        def __enter__(self):
+            return StreamStub._Response(self.outer._lines)
+
+        def __exit__(self, *exc):
+            return False
+
+    def stream(self, _method, _path, json=None):
+        self.payload = json
+        return StreamStub._Ctx(self)
+
+
+def run_stream(client, **kwargs):
+    lines = [
+        '{"message": {"content": "hello"}, "done": false}',
+        '{"message": {"content": ""}, "done": true, "done_reason": "stop"}',
+    ]
+    stub = StreamStub(lines)
+    client._http = stub  # type: ignore[assignment]
+    text = "".join(client.chat_stream([{"role": "user", "content": "hi"}], **kwargs))
+    return text, stub.payload
+
+
+class TestStructuredOutputs:
+    SCHEMA = {"type": "object", "properties": {"answer": {"type": "string"}}}
+
+    def test_format_is_sent_when_supported(self):
+        client, _ = make_client({})
+        _, payload = run_stream(client, response_format=self.SCHEMA)
+        assert payload is not None and payload["format"] == self.SCHEMA
+
+    def test_no_format_field_without_a_request(self):
+        client, _ = make_client({})
+        _, payload = run_stream(client)
+        assert payload is not None and "format" not in payload
+
+    def test_cloud_models_are_not_constrained(self):
+        """The docs are explicit: the cloud does not support `format`."""
+        client, _ = make_client({})
+        client.settings = Settings(llm_model="glm-5.3-flash:cloud")
+        text, payload = run_stream(client, response_format=self.SCHEMA)
+        assert payload is not None and "format" not in payload
+        assert text == "hello"
+
+    def test_done_reason_is_reported(self):
+        client, _ = make_client({})
+        usage: dict = {}
+        run_stream(client, on_usage=usage.update)
+        assert usage["done_reason"] == "stop"
