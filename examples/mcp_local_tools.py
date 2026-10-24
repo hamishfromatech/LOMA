@@ -107,9 +107,12 @@ def calculate(expression: str) -> dict:
 
 @mcp.tool
 def system_stats() -> dict:
-    """Report CPU count, memory in use, and the operating system.
+    """Report this machine: CPU count, memory in use, and the operating system.
 
-    Use when the user asks about the computer's CPU, memory, RAM, or OS.
+    Use when the user asks what is on or inside this machine, what computer or
+    device they are running, how much RAM or memory is in use or free, how many
+    CPU cores there are, what OS or macOS version this is, or asks for system
+    stats or specs.
     """
     import psutil
 

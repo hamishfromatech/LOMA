@@ -127,6 +127,64 @@ class TestListModels:
         assert stub.calls.count(("POST", "/api/show")) == 1
 
 
+class TestMergingTagsAndShow:
+    """MLX builds report no family and no parameter size in /api/tags."""
+
+    def test_missing_fields_are_filled_from_api_show(self):
+        thin = {
+            "models": [
+                {
+                    "name": "qwen3.5:0.8b",
+                    "size": 1_244_131_636,
+                    "details": {"family": "", "parameter_size": ""},
+                }
+            ]
+        }
+        rich = Response(
+            {
+                "capabilities": ["completion", "tools"],
+                "details": {"family": "qwen3_5", "parameter_size": "852.88M"},
+                "model_info": {"general.parameter_count": 852_878_912},
+            }
+        )
+        client, _ = make_client(
+            {("GET", "/api/tags"): Response(thin), ("POST", "/api/show"): rich}
+        )
+        model = client.list_models()[0]
+        assert model["family"] == "qwen3_5"
+        assert model["parameters"] == "852.9M"
+        assert model["capabilities"] == ["completion", "tools"]
+
+    def test_parameter_count_is_the_backstop(self):
+        thin = {
+            "models": [
+                {"name": "cloud:big", "size": 0, "details": {"parameter_size": ""}}
+            ]
+        }
+        rich = Response({"model_info": {"general.parameter_count": 321_323_031_390}})
+        client, _ = make_client(
+            {("GET", "/api/tags"): Response(thin), ("POST", "/api/show"): rich}
+        )
+        assert client.list_models()[0]["parameters"] == "321.3B"
+
+    def test_capabilities_in_the_listing_skip_the_probe(self):
+        listing = {
+            "models": [
+                {
+                    "name": "qwen3.5:0.8b",
+                    "size": 1_200_000_000,
+                    "details": {"family": "qwen3_5", "parameter_size": "0.8B"},
+                    "capabilities": ["completion"],
+                }
+            ]
+        }
+        client, stub = make_client({("GET", "/api/tags"): Response(listing)})
+        model = client.list_models()[0]
+        assert model["capabilities"] == ["completion"]
+        assert model["parameters"] == "0.8B"
+        assert ("POST", "/api/show") not in stub.calls
+
+
 class TestVoices:
     def test_reads_voices_from_api_show(self):
         client, stub = make_client({("POST", "/api/show"): show(["speech"], ["Zoey", "default"])})

@@ -121,16 +121,29 @@ class Agent:
         self._trim()
 
         messages = self.messages
-        if self.memory_context:
-            # Right after the persona prompt, before the conversation.
-            messages.insert(1, {"role": "system", "content": self.memory_context})
-        if self.skill_context:
-            # Skills are instructions, so they sit after the persona and after
-            # memory: a loaded guide outranks what the assistant remembers.
-            messages.insert(2 if self.memory_context else 1,
-                            {"role": "system", "content": self.skill_context})
-        if extra_context:
-            messages.append({"role": "system", "content": extra_context})
+        notes = [
+            note
+            for note in (self.memory_context, self.skill_context, extra_context)
+            if note
+        ]
+        if notes:
+            # One system message, not four. Several system turns make a small
+            # model narrate about its own instructions ("looking at my available
+            # skills…") instead of answering, and some chat templates only honour
+            # the first system message anyway.
+            messages[0] = {
+                "role": "system",
+                "content": "\n\n".join(
+                    [
+                        self.settings.system_prompt,
+                        *notes,
+                        # Last, deliberately. A small model follows the line it
+                        # read most recently, and the notes above are dense.
+                        "Answer the user now, in your own voice. No preamble, no "
+                        "restating the question, no describing what you are doing.",
+                    ]
+                ),
+            }
 
         return self._stream(messages, think=think)
 

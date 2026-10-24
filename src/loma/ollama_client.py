@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -22,6 +23,38 @@ from loma.config import Settings
 
 # TTS requests are capped by the server at 4096 characters.
 MAX_SPEECH_CHARS = 4000
+
+
+def human_parameters(raw: str) -> str:
+    """Ollama reports ``parameter_size`` as "0.8B" on local models but as a raw
+    count ("27356728560") on cloud ones. Either way the picker wants "27.4B"."""
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    if not text.isdigit():
+        # Ollama already humanised it; just trim "852.88M" to "852.9M".
+        match = re.fullmatch(r"([\d.]+)\s*([KMBT])", text)
+        if match:
+            return f"{round(float(match.group(1)), 1):g}{match.group(2)}"
+        return text
+    value = float(text)
+    for unit, size in (("T", 1e12), ("B", 1e9), ("M", 1e6), ("K", 1e3)):
+        if value >= size:
+            return f"{value / size:.1f}{unit}".replace(".0", "")
+    return f"{int(value)}"
+
+
+def _voices_from_payload(payload: dict[str, Any]) -> list[str]:
+    """``voices`` is a list of names, or of objects carrying ``name``/``id``."""
+    found: list[str] = []
+    for voice in payload.get("voices") or []:
+        if isinstance(voice, str):
+            found.append(voice)
+        elif isinstance(voice, dict):
+            name = voice.get("name") or voice.get("id")
+            if name:
+                found.append(str(name))
+    return _ordered_voices(found)
 
 
 def _ordered_voices(voices: list[str]) -> list[str]:
@@ -52,7 +85,7 @@ class OllamaClient:
             base_url=settings.ollama_host,
             timeout=httpx.Timeout(timeout, connect=5.0),
         )
-        self._capability_cache: dict[str, list[str]] = {}
+        self._detail_cache: dict[str, dict[str, Any]] = {}
 
     # -- lifecycle -----------------------------------------------------
     def close(self) -> None:
@@ -102,7 +135,14 @@ class OllamaClient:
             models = self._models_from_v1()
         if probe:
             for model in models:
-                model["capabilities"] = self.capabilities(model["name"])
+                # Ollama 0.40.10 puts capabilities in /api/tags, and MLX builds
+                # leave family and parameter_size blank there — /api/show is the
+                # only place those two survive, so fill only what is missing.
+                if not model["capabilities"] or not model["parameters"] or not model["family"]:
+                    info = self.model_info(model["name"])
+                    model["capabilities"] = model["capabilities"] or info["capabilities"]
+                    model["parameters"] = model["parameters"] or info["parameters"]
+                    model["family"] = model["family"] or info["family"]
         return sorted(models, key=lambda item: item["size_mb"])
 
     def _models_from_tags(self) -> list[dict[str, Any]]:
@@ -119,10 +159,11 @@ class OllamaClient:
                     "name": name,
                     "size_mb": round(model.get("size", 0) / 1_000_000, 1),
                     "family": details.get("family", ""),
-                    "parameters": details.get("parameter_size", ""),
+                    "parameters": human_parameters(details.get("parameter_size", "")),
                     "quantization": details.get("quantization_level", ""),
                     "modified_at": model.get("modified_at", ""),
-                    "capabilities": [],
+                    # Ollama 0.40.10+ includes this; older builds do not.
+                    "capabilities": list(model.get("capabilities") or []),
                     "source": "api/tags",
                 }
             )
@@ -150,25 +191,49 @@ class OllamaClient:
             )
         return models
 
-    def capabilities(self, model: str) -> list[str]:
-        """A model's capabilities: completion, vision, tools, thinking, speech…
+    def model_info(self, model: str) -> dict[str, Any]:
+        """The useful half of ``/api/show``, cached per model.
 
-        Probing costs one ``/api/show`` per model, so the answers are cached.
-        An empty list means "unknown", never "unusable" — callers must treat it
-        as unproven rather than filtering the model out.
+        Returns capabilities plus whatever identifying detail the model carries:
+        an MLX build reports ``parameter_size: ""`` in ``/api/tags`` but
+        ``"852.88M"`` here, with ``general.parameter_count`` as a backstop.
         """
-        cached = self._capability_cache.get(model)
+        cached = self._detail_cache.get(model)
         if cached is not None:
             return cached
+
+        empty = {"capabilities": [], "parameters": "", "family": "", "voices": []}
         try:
             response = self._http.post("/api/show", json={"model": model}, timeout=10)
         except httpx.HTTPError:
-            return []
+            return empty
         if not response.is_success:
-            return []
-        found = list(response.json().get("capabilities") or [])
-        self._capability_cache[model] = found
+            return empty
+
+        payload = response.json()
+        details = payload.get("details") or {}
+        info = payload.get("model_info") or {}
+
+        parameters = human_parameters(details.get("parameter_size", ""))
+        if not parameters and info.get("general.parameter_count"):
+            parameters = human_parameters(str(info["general.parameter_count"]))
+
+        found = {
+            "capabilities": list(payload.get("capabilities") or []),
+            "parameters": parameters,
+            "family": details.get("family", "") or details.get("families", "") or "",
+            "voices": _voices_from_payload(payload),
+        }
+        self._detail_cache[model] = found
         return found
+
+    def capabilities(self, model: str) -> list[str]:
+        """A model's capabilities: completion, vision, tools, thinking, speech…
+
+        An empty list means "unknown", never "unusable" — callers treat it as
+        unproven rather than filtering the model out.
+        """
+        return self.model_info(model)["capabilities"]
 
     def voices(self, model: str | None = None) -> list[str]:
         """Discover a speech model's voices.
@@ -180,28 +245,10 @@ class OllamaClient:
         """
         model = model or self.settings.tts_model
 
-        listed = self._voices_from_show(model)
+        listed = self.model_info(model)["voices"]
         if listed:
             return listed
         return self._voices_from_error(model)
-
-    def _voices_from_show(self, model: str) -> list[str]:
-        try:
-            response = self._http.post("/api/show", json={"model": model}, timeout=10)
-        except httpx.HTTPError:
-            return []
-        if not response.is_success:
-            return []
-        payload = response.json()
-        found: list[str] = []
-        for voice in payload.get("voices") or []:
-            if isinstance(voice, str):
-                found.append(voice)
-            elif isinstance(voice, dict):
-                name = voice.get("name") or voice.get("id")
-                if name:
-                    found.append(str(name))
-        return _ordered_voices(found)
 
     def _voices_from_error(self, model: str) -> list[str]:
         probe = {

@@ -127,8 +127,11 @@ def test_index_lists_every_skill_and_mentions_the_tool(tmp_path):
     write_skill(tmp_path, "b", frontmatter="---\nname: beta\ndescription: Second one.\n---", body="x")
     index = SkillStore(tmp_path).as_index()
     assert "load_skill" in index
-    assert "- alpha: First one." in index
-    assert "- beta: Second one." in index
+    # Names only: hand a 0.8B model a paragraph about its own skills and it
+    # starts answering that instead of the question. Descriptions live in the
+    # tool schema, where they are only paid for when the tool is considered.
+    assert "alpha, beta" in index
+    assert "First one." not in index
 
 
 def test_context_frames_the_body_as_instructions(tmp_path):
@@ -153,3 +156,42 @@ def test_short_description_is_one_trimmed_line(tmp_path):
     short = SkillStore(tmp_path).scan()[0].short_description
     assert "\n" not in short
     assert "  " not in short
+
+
+# -- lexical matching --------------------------------------------------
+def test_match_finds_the_skill_a_request_is_asking_for(tmp_path):
+    write_skill(
+        tmp_path,
+        "write-a-skill",
+        frontmatter="---\nname: write-a-skill\ndescription: Teach LOMA a procedure.\n---",
+        body="x",
+    )
+    write_skill(
+        tmp_path,
+        "write-an-mcp-server",
+        frontmatter="---\nname: write-an-mcp-server\ndescription: Build a new tool.\n---",
+        body="x",
+    )
+    store = SkillStore(tmp_path)
+    assert store.match("write me a skill for summarising PDFs").name == "write-a-skill"
+    assert store.match("build an MCP server for my calendar").name == "write-an-mcp-server"
+
+
+def test_match_returns_nothing_for_an_ordinary_question(tmp_path):
+    write_skill(tmp_path, "write-a-skill", frontmatter="---\nname: write-a-skill\n---", body="x")
+    store = SkillStore(tmp_path)
+    assert store.match("what is on this machine?") is None
+    assert store.match("what time is it?") is None
+    assert store.match("") is None
+
+
+def test_match_needs_more_than_one_shared_word(tmp_path):
+    """One overlapping word is a coincidence, and a wrong guide is worse than none."""
+    write_skill(
+        tmp_path,
+        "tune-a-modelfile",
+        frontmatter="---\nname: tune-a-modelfile\ndescription: Adjust sampling for a model.\n---",
+        body="x",
+    )
+    store = SkillStore(tmp_path)
+    assert store.match("is the model ready?") is None

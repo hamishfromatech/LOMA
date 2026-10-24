@@ -54,6 +54,7 @@ from loma.memory_store import MemoryStore
 from loma.ollama_client import OllamaClient
 from loma.skills import SkillStore
 from loma.stt import Transcriber, Transcript
+from loma.text import ThinkingSplitter, strip_thinking
 from loma.tool_router import NeedleRouter, ToolRoute
 
 log = logging.getLogger(__name__)
@@ -169,10 +170,11 @@ class VoicePipeline:
         self._tools_ready = True
         if self.hub.configured and not self.hub.start():
             return False
+        # Skills are deliberately *not* offered to the router: one extra tool
+        # dropped an unrelated request's confidence from 0.54 to 0.27 on a 35 MB
+        # router, and skill requests scored below its refusal threshold anyway.
+        # They are matched lexically in _tool_events instead.
         tools = list(self.hub.tools)
-        skill_tool = self._skill_tool()
-        if skill_tool is not None:
-            tools.append(skill_tool)
         if not tools:
             log.debug("no tools and no skills; running without either")
             return False
@@ -323,14 +325,31 @@ class VoicePipeline:
         first_audio = 0.0
         extra_context = batch.as_prompt() if batch and batch.calls else None
 
+        splitter = ThinkingSplitter()
         try:
             for delta in self.agent.respond(user_text, think=think, extra_context=extra_context):
                 if not first_token:
                     first_token = time.perf_counter() - started
                 parts.append(delta)
-                yield {"type": "delta", "text": delta}
+                # A reasoning model can put its scratchpad in the content stream.
+                # Hold the first window of text back until we know it is not that.
+                visible = splitter.push(delta)
+                if not visible:
+                    continue
+                yield {"type": "delta", "text": visible}
 
-                for sentence in chunker.push(delta):
+                for sentence in chunker.push(visible):
+                    if not first_audio:
+                        first_audio = time.perf_counter() - started
+                    if speaker:
+                        speaker.say(sentence)
+                    if emit_audio:
+                        yield self._audio_event(sentence, audio_format)
+
+            tail = splitter.flush()
+            if tail:
+                yield {"type": "delta", "text": tail}
+                for sentence in chunker.push(tail):
                     if not first_audio:
                         first_audio = time.perf_counter() - started
                     if speaker:
@@ -352,7 +371,7 @@ class VoicePipeline:
             if speaker:
                 speaker.close()
 
-        reply = "".join(parts).strip()
+        reply = strip_thinking("".join(parts)).strip()
         if reply:
             self.last_reply = reply
 
@@ -429,6 +448,40 @@ class VoicePipeline:
         if not self.settings.mcp_enabled or not self.start_tools():
             return None
 
+        skill = self.skills.match(user_text) if self.skills is not None else None
+        if skill is not None:
+            # Deterministic, no router, no model. The body still arrives as a
+            # system note, never as a flattened tool result.
+            arguments = {"name": skill.name}
+            tool = self._skill_tool()
+            # Matched lexically, not by the router: report it as its own intent
+            # so the trace does not claim the question was never routed.
+            yield {
+                "type": "route",
+                "intent": "skill",
+                "matched": skill.name,
+                "latency_ms": 0.0,
+            }
+            yield {
+                "type": "tool",
+                "name": SKILL_TOOL_NAME,
+                "arguments": arguments,
+                "confidence": 1.0,
+            }
+            started = time.perf_counter()
+            result = self._run_skill_tool(arguments)
+            latency = time.perf_counter() - started
+            call = ToolCall(tool=tool, arguments=arguments, result=result,
+                            latency_s=latency, error=result.startswith("error:"))
+            yield {
+                "type": "tool_result",
+                "name": SKILL_TOOL_NAME,
+                "result": result,
+                "latency_ms": round(latency * 1000, 1),
+                "error": call.error,
+            }
+            return ToolBatch(calls=[call])
+
         route = self.tool_router.route(user_text)
         self.last_tool_route = route
         if not route.has_calls:
@@ -476,18 +529,19 @@ class VoicePipeline:
         return ToolBatch(calls=calls) if calls else None
 
     def _skill_note(self) -> str:
-        """The skill note for this turn: the index, plus any body just loaded.
+        """The body of a skill loaded this turn, and nothing else.
 
-        Consumed exactly once — the loaded body is cleared afterwards so a guide
-        cannot silently ride along for the rest of the conversation and eat the
-        window.
+        There used to be an index here — "call load_skill with one of these" — on
+        every turn. It is gone for two reasons: skills are matched lexically now,
+        so the model is never asked to choose one, and advertising a tool the
+        model does not have made a 0.8B narrate instead of answer.
+
+        Consumed exactly once, so a guide cannot ride along for the rest of the
+        conversation and eat the window.
         """
-        if self.skills is None:
-            return ""
-        index = self.skills.as_index()
         body = self._skill_context
         self._skill_context = ""
-        return "\n\n".join(part for part in (index, body) if part)
+        return body
 
     def _run_skill_tool(self, arguments: dict) -> str:
         """Resolve ``load_skill``. Returns a short note for the tool card.

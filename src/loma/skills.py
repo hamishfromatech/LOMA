@@ -213,6 +213,49 @@ class SkillStore:
         return body
 
     # -- prompt shapes -------------------------------------------------
+    def match(self, text: str) -> Skill | None:
+        """The skill this request is asking for, decided without a model.
+
+        Skills used to be offered to the router as a ``load_skill`` tool. On a
+        35 MB router that was a net loss twice over: adding one more tool dropped
+        the confidence of an unrelated request ("what is on this machine?") from
+        0.54 to 0.27, and skill requests themselves scored below the refusal
+        threshold, so the tool never fired at all.
+
+        Matching here is lexical and deterministic, which is the same rule the
+        control words follow: a narrow intent that a small model provably cannot
+        be trusted with does not get to touch the model.
+        """
+        words = {word for word in re.findall(r"[a-z0-9]+", (text or "").lower()) if len(word) > 2}
+        if not words:
+            return None
+
+        best: tuple[float, Skill] | None = None
+        for skill in self.scan():
+            # The name is the strongest signal: "write-a-skill" shares "write"
+            # and "skill" with the request, and nothing else competes for those.
+            name_words = {word for word in re.split(r"[-_]", skill.name.lower()) if word}
+            description_words = {
+                word
+                for word in re.findall(r"[a-z0-9]+", skill.description.lower())
+                if len(word) > 3
+            }
+            score = 0.0
+            score += 3.0 * len(words & name_words)
+            score += 1.0 * len(words & description_words)
+            if skill.name.lower().replace("-", " ") in (text or "").lower():
+                score += 5.0
+            if score <= 0:
+                continue
+            if best is None or score > best[0]:
+                best = (score, skill)
+
+        # Two shared words is the floor: one shared word is usually a coincidence
+        # ("server", "write") and a wrong skill body is worse than none.
+        if best is None or best[0] < 2.0:
+            return None
+        return best[1]
+
     def as_index(self) -> str:
         """The always-on note: what skills exist and when to reach for one.
 
@@ -222,13 +265,12 @@ class SkillStore:
         skills = self.scan()
         if not skills:
             return ""
-        lines = [
-            "You have skills installed: short guides written for this machine. "
-            "The full text of a skill is not loaded — call load_skill with its "
-            "name before answering anything it covers.",
-        ]
-        lines += [f"- {skill.name}: {skill.short_description}" for skill in skills]
-        return "\n".join(lines)
+        # One line, names only. A 0.8B model that is handed a paragraph of
+        # meta-instruction about its own skills starts answering the instruction
+        # instead of the question — the descriptions live in the tool schema,
+        # where they belong.
+        names = ", ".join(skill.name for skill in skills)
+        return f"Skills available through load_skill: {names}."
 
     def as_context(self, name: str) -> str:
         """The loaded skill, framed so a 0.8B model follows it as instructions."""
@@ -239,7 +281,11 @@ class SkillStore:
         title = skill.name if skill else name
         return (
             f"The user asked for the {title!r} skill. Follow it for this reply. "
-            "It describes procedure, not facts about the user.\n\n" + body
+            "It describes procedure, not facts about the user. "
+            # Without this, a 0.8B reads the guide aloud: "Key points from the
+            # skill: ..." — the guide is a script, not something to report on.
+            "Do not mention the guide, quote it, describe it or list its steps; "
+            "just do what it says and answer the user.\n\n" + body
         )
 
 

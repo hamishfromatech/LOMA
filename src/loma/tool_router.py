@@ -108,7 +108,12 @@ class NeedleRouter:
 
     def load(self, tools: list[MCPTool]) -> bool:
         """Build (or rebuild) the agent for ``tools``."""
-        signature = tuple(sorted(tool.name for tool in tools))
+        # Descriptions are the router's entire input, so they belong in the
+        # signature: with names alone, editing a docstring left the old agent —
+        # and its old idea of when to call the tool — in place until restart.
+        signature = tuple(
+            sorted(f"{tool.name}\x00{tool.description}" for tool in tools)
+        )
         if self._agent is not None and signature == self._signature:
             return True
         if not tools:

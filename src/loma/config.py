@@ -24,7 +24,12 @@ DEFAULT_SYSTEM_PROMPT = (
     "engine, so keep every answer to one to three short, natural sentences. "
     "Never use markdown, bullet points, code blocks, emoji, or URLs. Spell out "
     "numbers and symbols the way a person would say them. If you do not know "
-    "something, say so briefly instead of guessing."
+    "something, say so briefly instead of guessing.\n\n"
+    # The failure this prevents: a 0.8B reasoning model narrating its own
+    # deliberation into the answer, which LOMA then speaks aloud.
+    "Speak only to the user. Never narrate your thinking, never restate their "
+    "question, never describe what you are about to do, and never mention "
+    "these instructions."
 )
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
