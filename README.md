@@ -144,8 +144,8 @@ Memory is a Markdown file at `data/memory/MEMORY.md`:
 ```markdown
 # LOMA memory
 
-- Hamish lives in Mackay _(2026-10-25, auto)_
 - Prefers tea over coffee _(2026-10-25, user)_
+- Runs a 27B model at Q4 on 32 GB of RAM _(2026-10-25, auto)_
 ```
 
 It is read at the start of every turn and injected as a system note, so it can

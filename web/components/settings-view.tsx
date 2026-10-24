@@ -438,7 +438,7 @@ export function SettingsView() {
             spellCheck={false}
             aria-label="Memory contents"
             className="w-full resize-y rounded-xl border border-white/10 bg-black/30 px-4 py-3 font-mono text-xs leading-relaxed text-white/75 outline-none placeholder:text-white/20 focus:border-white/20"
-            placeholder="# LOMA memory&#10;&#10;- Name: Hamish&#10;- Lives in Mackay, Queensland"
+            placeholder="# LOMA memory&#10;&#10;- Prefers tea over coffee&#10;- Runs a 27B model at Q4 on 32 GB"
           />
 
           <div className="flex flex-wrap items-center justify-between gap-2">

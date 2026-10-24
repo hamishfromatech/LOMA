@@ -12,9 +12,9 @@ def test_missing_file_is_created_with_a_header(tmp_path):
 
 def test_append_writes_one_bullet(tmp_path):
     store = MemoryStore(tmp_path / "MEMORY.md")
-    assert store.append("Hamish lives in Mackay") is True
+    assert store.append("Keeps a note file by hand") is True
     facts = store.facts()
-    assert facts == ["Hamish lives in Mackay"]
+    assert facts == ["Keeps a note file by hand"]
     assert date.today().isoformat() in store.read()
 
 
@@ -45,10 +45,10 @@ def test_context_is_empty_when_nothing_is_remembered(tmp_path):
 
 def test_context_lists_facts_and_asks_for_restraint(tmp_path):
     store = MemoryStore(tmp_path / "MEMORY.md")
-    store.append("Hamish lives in Mackay")
+    store.append("Keeps a note file by hand")
     store.append("Prefers tea")
     context = store.as_context()
-    assert "Hamish lives in Mackay" in context
+    assert "Keeps a note file by hand" in context
     assert "Prefers tea" in context
     assert "do not recite" in context.lower()
 

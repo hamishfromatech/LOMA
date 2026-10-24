@@ -139,8 +139,8 @@ again. Read `docs/ARCHITECTURE.md#tool-design` and explain the difference.
 ## Lab 5 — Fill the window, then compact
 
 ```bash
-loma ask "My name is Hamish. Remember it." --no-speak
-loma ask "What is my name?" --no-speak
+loma ask "Call me Sam. Remember it." --no-speak
+loma ask "What should you call me?" --no-speak
 ```
 
 Now force compaction by lowering the target:
