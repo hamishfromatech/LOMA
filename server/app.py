@@ -26,6 +26,8 @@ from pathlib import Path
 
 from flask import Flask, Response, jsonify, request, stream_with_context
 
+from server.images import read_images
+
 from .runtime import get_runtime
 
 log = logging.getLogger(__name__)
@@ -116,7 +118,7 @@ def create_app() -> Flask:
         if not message:
             return jsonify({"error": "message is required"}), 400
         speak = bool(payload.get("speak", True))
-        images, problem = _read_images(payload)
+        images, problem = read_images(payload)
         if problem:
             return jsonify({"error": problem}), 400
         return _stream_turn(get_runtime(), conversation_id, message, speak, images)
@@ -129,7 +131,7 @@ def create_app() -> Flask:
         if not message:
             return jsonify({"error": "message is required"}), 400
         speak = bool(payload.get("speak", True))
-        images, problem = _read_images(payload)
+        images, problem = read_images(payload)
         if problem:
             return jsonify({"error": problem}), 400
 
@@ -312,42 +314,6 @@ def create_app() -> Flask:
         return jsonify({"ok": True})
 
     return app
-
-
-MAX_IMAGES = 4
-MAX_IMAGE_BYTES = 8 * 1024 * 1024
-
-
-def _read_images(payload: dict) -> tuple[list[str], str | None]:
-    """Validate the ``images`` field: base64 only, at most four, size-capped.
-
-    The UI sends data URLs ("data:image/png;base64,…") because that is what a
-    FileReader gives you, and Ollama wants the bare base64 payload.
-    """
-    raw = payload.get("images")
-    if raw is None:
-        return [], None
-    if not isinstance(raw, list):
-        return [], "images must be a list of base64 strings"
-    if len(raw) > MAX_IMAGES:
-        return [], f"at most {MAX_IMAGES} images per turn"
-
-    cleaned: list[str] = []
-    for index, item in enumerate(raw):
-        if not isinstance(item, str) or not item:
-            return [], f"image {index} is not a base64 string"
-        value = item.strip()
-        if value.startswith("data:"):
-            _, _, value = value.partition(",")
-        value = "".join(value.split())
-        if not value:
-            return [], f"image {index} is empty"
-        # 4/3 is the base64 expansion; this catches an oversized upload before
-        # it reaches the model rather than after a 20-second wait.
-        if len(value) * 3 / 4 > MAX_IMAGE_BYTES:
-            return [], f"image {index} is larger than {MAX_IMAGE_BYTES // (1024 * 1024)} MB"
-        cleaned.append(value)
-    return cleaned, None
 
 
 def _stream_turn(

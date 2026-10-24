@@ -30,6 +30,10 @@ jobs:
       # The suite is written to need no network and no models, so we install only
       # what the test modules actually import — not the full runtime stack
       # (faster-whisper, sounddevice and fastmcp are heavy and untested here).
+      #
+      # Note: no flask. Validation and memory logic live in modules that do not
+      # import a web framework, so the tests can prove that separation by running
+      # without one — which is exactly what this job does.
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip

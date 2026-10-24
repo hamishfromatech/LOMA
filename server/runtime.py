@@ -22,6 +22,12 @@ from loma.config import Settings
 from loma.context import describe_policy
 from loma.conversations import ConversationStore
 from loma.memory import snapshot
+from loma.memory_evidence import (
+    MEMORY_PROMPT,
+    MEMORY_SCHEMA,
+    looks_like_fact,
+    quote_appears,
+)
 from loma.memory_store import MemoryStore
 from loma.onboarding import (
     completed_state,
@@ -42,75 +48,6 @@ _PERSONAL = re.compile(r"\b(i|i'm|im|i've|my|me|mine|we|our|us)\b", re.IGNORECAS
 
 
 #: A fact is a statement. These are the shapes that are not statements.
-_QUESTION_WORD = re.compile(
-    r"^(what|why|how|when|where|who|which|do|does|did|can|could|would|should|"
-    r"is|are|am|was|were|tell|show|give)\b",
-    re.IGNORECASE,
-)
-#: Meta-sentences about the conversation are not facts about the person.
-_META = re.compile(
-    r"\b(you asked|user asked|you said|you want to know|you are asking|"
-    r"you were asking)\b",
-    re.IGNORECASE,
-)
-
-
-def _looks_like_fact(fact: str, quote: str) -> bool:
-    """Reject questions and meta-sentences dressed up as remembered facts.
-
-    Verbatim evidence stops a fact being invented. It does not stop the model
-    storing the user's *question* as though it were a statement — "What is your
-    name?" and "You asked what I know about you" both arrived with perfectly
-    accurate quotes attached.
-    """
-    text = fact.strip()
-    if not text:
-        return False
-    if "?" in text or _QUESTION_WORD.match(text) or _META.search(text):
-        return False
-    # If the sentence the model quoted was itself a question, it is not a fact.
-    return not quote.strip().endswith("?")
-
-
-def _quote_appears(quote: str, text: str) -> bool:
-    """Is the model's evidence really in what the user said?
-
-    Compared on collapsed, lower-cased text so that punctuation and line breaks
-    cannot fail an honest quote — only an invented one.
-    """
-    def normalise(value: str) -> str:
-        return " ".join(value.lower().split())
-
-    needle = normalise(quote)
-    # An empty quote matches everything; refuse rather than pass by accident.
-    return bool(needle) and needle in normalise(text)
-
-MEMORY_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "worth_remembering": {"type": "boolean"},
-        "fact": {"type": "string"},
-        # The model must show its evidence. A quote that is not actually in the
-        # user's message means the "fact" was invented, and is thrown away —
-        # which is what stops a story request from becoming a biography.
-        "quote": {"type": "string"},
-    },
-    "required": ["worth_remembering", "fact", "quote"],
-}
-
-MEMORY_PROMPT = (
-    "You decide whether the user stated a durable fact about themselves that is "
-    "worth remembering in a later conversation: their name, where they live, what "
-    "they do, a preference, a project, a constraint.\n\n"
-    "Only facts the user stated about themselves, in their own words. Never "
-    "infer from a story, a hypothetical, an example, or a request — asking for a "
-    "story about a lighthouse says nothing about the user.\n\n"
-    "Reply with JSON only. `quote` must be copied verbatim from the user's "
-    "message: the exact words that support the fact. If you cannot quote it, set "
-    "worth_remembering to false."
-)
-
-
 class Runtime:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or Settings.from_env()
@@ -413,11 +350,11 @@ class Runtime:
             return None
 
         quote = " ".join(str(result.get("quote", "")).split()).strip(" .\u201c\u201d\"'")
-        if not quote or not _quote_appears(quote, user_text):
+        if not quote or not quote_appears(quote, user_text):
             log.info("memory candidate rejected: no verbatim evidence (%r)", fact[:60])
             return None
 
-        if not _looks_like_fact(fact, quote):
+        if not looks_like_fact(fact, quote):
             log.info("memory candidate rejected: not a statement (%r)", fact[:60])
             return None
 
