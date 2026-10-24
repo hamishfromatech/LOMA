@@ -272,14 +272,133 @@ Pull it apart one layer at a time:
 
 ---
 
+## For AI agents
+
+If you are an agent working in this repo, read these four things before you change
+anything, in this order: this README, [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md),
+`src/loma/pipeline.py`, and `tests/`. That is usually enough to place any change.
+
+### Orient in one command
+
+```bash
+loma doctor        # every dependency, model and device, with pass/fail
+loma tools         # the MCP tools currently loaded and their parameter schemas
+loma route "stop"  # the control lexicon and Needle routing, with no LLM involved
+loma context       # the active window, the compaction target, live token count
+```
+
+`loma route "…"` is the fastest way to test a routing bug — it runs the lexicon
+and Needle and stops before the language model, so a wrong answer there is never
+the LLM's fault.
+
+### The rules the codebase enforces
+
+These are load-bearing. A change that breaks one is a regression even if the
+tests still pass.
+
+1. **One turn, one implementation.** `pipeline.run_turn()` is an iterator of
+events (`route`, `tool`, `tool_result`, `delta`, `audio`, `memory`, `done`,
+`error`). The CLI and the Flask SSE endpoint both consume it. Never add a second
+code path that answers a turn — add an event instead.
+2. **Control words never touch a model.** `control.py` is a deterministic lexicon.
+Don't "improve" it by asking the LLM. The 0.8B model misread `stop` vs `exit`
+48% of the time, which is why the lexicon exists.
+3. **Tool schemas never reach the LLM.** `tool_router.py` has Needle pick the tool
+and fill arguments with a grammar-constrained decoder. Adding a tool must not
+add anything to the language-model prompt.
+4. **Compaction is driven by `prompt_eval_count`**, the real tokenizer count
+Ollama returns. Never reintroduce a character-based estimate.
+5. **Memory is a file.** `data/memory/MEMORY.md` is read every turn and appended
+to; it is never part of the conversation window and must never be compacted.
+6. **Tests need no network, no models, no Ollama.** If a change cannot be tested
+without them, the logic belongs somewhere it can be — that is why the decision
+layer is separate from the inference layer.
+
+### Extending it
+
+**Add an MCP tool** — write a FastMCP function with a docstring that includes an
+`Args:` section (FastMCP only emits parameter descriptions from `Args:`, and
+Needle reads those), then reference it in `mcp.json`. Prefer one tool per action:
+`roll_die(sides)` beats `roll_dice(sides, count)`, because Needle swaps adjacent
+number arguments. Verify with `loma tools --probe "roll a twenty-sided die"`.
+
+**Add a control word** — extend the table in `control.py` and its tests. It must
+run before any model, resolve in microseconds, and never allocate.
+
+**Add a CLI command** — `cli.py`, one function per verb, and it must call into
+`pipeline` rather than reimplementing a turn. Keep `loma <verb> --help` honest.
+
+**Add a setting** — `config.py` only, typed, env-driven, with a sane default and
+a test. The Settings page reads the same object; don't let the web layer own a
+second source of truth.
+
+**Change the UI** — `web/` is Next.js + [prompt-kit](https://www.prompt-kit.com).
+The API contract is the event stream, not the components. `web/lib/api.ts` is the
+only place that should know the endpoint shapes.
+
+### Working style that fits this repo
+
+- **Prove the number.** The README's RAM and latency figures come from
+  `loma bench` and `scripts/bench_memory.py`. If you change a model, a window or a
+  thread, re-run them and update [`docs/RAM_BUDGET.md`](docs/RAM_BUDGET.md) — don't
+  eyeball it.
+- **Add a test with the change.** 135 tests run in 0.17s; there is no excuse not
+  to. A fast suite is a feature.
+- **Leave the offline promise intact.** Nothing may fetch at runtime. New
+  dependencies that phone home are a design break, not a detail.
+- **Small modules.** The largest file is 687 lines. If yours would be the biggest,
+  split it.
+
 ## Tests
+
+The whole suite is **135 tests in under a second**, and it needs no network, no
+models and no Ollama. That is deliberate: the parts worth testing are the parts
+that decide things — the control lexicon, Needle's routing, compaction, the
+memory store — not the model weights.
 
 ```bash
 make test    # 135 tests, no network, no models required
-make lint
+make lint    # ruff over src, tests and server, plus eslint in web/
 ```
+
+After `./scripts/setup.sh` those run inside `.venv`. If you would rather not
+create the virtualenv first, four packages are enough — the suite only imports
+what it actually uses:
+
+```bash
+pip install pytest numpy httpx psutil
+pytest                    # 135 passed
+```
+
+`pythonpath = ["src"]` is set in `pyproject.toml`, so a plain `pytest` works
+from a fresh clone without `pip install -e .` first.
+
+Every push and pull request runs the same suite on Ubuntu and macOS, against
+Python 3.10 and 3.12, plus `ruff` — see
+[`.github/workflows/test.yml`](.github/workflows/test.yml).
 
 ## License
 
 MIT. Models keep their own licences: Qwen 3.5 (Apache 2.0), Needle 3
 (Apache 2.0), Phonon (see the Ollama model page), faster-whisper (MIT).
+
+---
+
+## If you want the rest of it
+
+LOMA is the starter kit: one small assistant, every layer visible, nothing
+hidden behind an API key. The patterns in it — a lexicon instead of a model for
+control, a 35 MB router instead of a schema dump, memory as a file — are the
+ones that scale.
+
+Where they scale to is the **Open Source AI Builder's Club**: 26 courses and 11
+vault packs on running local LLMs, agents and RAG on your own hardware, with the
+downloads that actually run.
+
+[![Own your AI in 90 days — join the Open Source AI Builder's Club](docs/assets/own-your-ai-in-90-days.png)](https://www.skool.com/open-source-ai-builders-club)
+
+**[→ Own your AI in 90 days](https://www.skool.com/open-source-ai-builders-club)**
+
+No affiliation, no tracking, no requirement. LOMA is MIT and complete on its
+own — the club is simply where the next steps live if you want them.
+
