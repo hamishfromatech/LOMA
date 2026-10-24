@@ -22,6 +22,8 @@ export type ChatMessage = {
   role: "user" | "assistant"
   content: string
   tools: ToolCallView[]
+  /** Data URLs, kept only for the preview in the transcript. */
+  images?: string[]
   intent?: string
   matched?: string
   metrics?: TurnMetrics

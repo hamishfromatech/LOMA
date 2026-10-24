@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from typing import Any
 
 from loma.config import Settings
 from loma.context import estimate_messages_tokens
@@ -105,6 +106,7 @@ class Agent:
         think: bool | str = False,
         extra_context: str | None = None,
         on_thinking: Callable[[str], None] | None = None,
+        images: list[str] | None = None,
     ) -> Iterator[str]:
         """Yield assistant token deltas for ``user_text``.
 
@@ -120,7 +122,13 @@ class Agent:
         # previous turn.
         self.last_compaction = self._maybe_compact()
 
-        self._messages.append({"role": "user", "content": user_text})
+        turn: dict[str, Any] = {"role": "user", "content": user_text}
+        if images:
+            # Ollama takes base64 on the message itself. Vision models read it;
+            # text models ignore the field, so the caller checks the capability
+            # first rather than letting an image vanish silently.
+            turn["images"] = images
+        self._messages.append(turn)
         self._trim()
 
         messages = self.messages

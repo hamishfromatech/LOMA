@@ -156,6 +156,7 @@ export function ChatView() {
   const [status, setStatus] = useState<Status | null>(null)
   const [settings, setSettings] = useState<SettingsPayload | null>(null)
   const [models, setModels] = useState<ModelOption[]>([])
+  const [attachments, setAttachments] = useState<{ id: string; dataUrl: string }[]>([])
   const [modelsLoading, setModelsLoading] = useState(false)
   const [chatsOpen, setChatsOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -173,6 +174,27 @@ export function ChatView() {
     } catch {
       setStatus(null)
     }
+  }, [])
+
+  const addAttachments = useCallback((files: File[]) => {
+    const images = files.filter((file) => file.type.startsWith("image/")).slice(0, 4)
+    for (const file of images) {
+      const reader = new FileReader()
+      reader.onload = () => {
+        const dataUrl = String(reader.result ?? "")
+        if (!dataUrl) return
+        setAttachments((current) =>
+          current.length >= 4
+            ? current
+            : [...current, { id: newId(), dataUrl }],
+        )
+      }
+      reader.readAsDataURL(file)
+    }
+  }, [])
+
+  const removeAttachment = useCallback((id: string) => {
+    setAttachments((current) => current.filter((item) => item.id !== id))
   }, [])
 
   const refreshModels = useCallback(async () => {
@@ -289,11 +311,13 @@ export function ChatView() {
   const send = useCallback(
     async (text: string) => {
       const message = text.trim()
-      if (!message || busy) return
+      const images = attachments.map((item) => item.dataUrl)
+      if ((!message && images.length === 0) || busy) return
 
       unlock()
       setError(null)
       setInput("")
+      setAttachments([])
       setBusy(true)
       setChatsOpen(false)
 
@@ -315,6 +339,7 @@ export function ChatView() {
         role: "user",
         content: message,
         tools: [],
+        images,
       }
       const assistantId = newId()
       const assistantMessage: ChatMessage = {
@@ -427,6 +452,7 @@ export function ChatView() {
           conversationId: conversationId!,
           speak: voiceOn,
           signal: controller.signal,
+          images,
         })
       } catch (cause) {
         if ((cause as Error).name !== "AbortError") {
@@ -440,7 +466,7 @@ export function ChatView() {
         void refreshConversations()
       }
     },
-    [activeId, busy, enqueue, refreshConversations, refreshStatus, unlock, voiceOn],
+    [activeId, attachments, busy, enqueue, refreshConversations, refreshStatus, unlock, voiceOn],
   )
 
   const stopTurn = useCallback(() => {
@@ -449,6 +475,8 @@ export function ChatView() {
     setBusy(false)
   }, [stop])
 
+  const currentModel = models.find((item) => item.name === settings?.llm_model)
+  const visionEnabled = currentModel?.capabilities.includes("vision") ?? false
   const empty = messages.length === 0
   const storedTitle = conversations.find((item) => item.id === activeId)?.title
   const firstLine = messages.find((item) => item.role === "user")?.content ?? ""
@@ -519,6 +547,10 @@ export function ChatView() {
                 onModelChange={(model) => void changeModel(model)}
                 onRefreshModels={() => void refreshModels()}
                 modelsLoading={modelsLoading}
+                attachments={attachments}
+                onAddAttachments={addAttachments}
+                onRemoveAttachment={removeAttachment}
+                visionEnabled={visionEnabled}
                 variant="hero"
               />
 
@@ -596,6 +628,10 @@ export function ChatView() {
                   onModelChange={(model) => void changeModel(model)}
                   onRefreshModels={() => void refreshModels()}
                   modelsLoading={modelsLoading}
+                  attachments={attachments}
+                  onAddAttachments={addAttachments}
+                  onRemoveAttachment={removeAttachment}
+                  visionEnabled={visionEnabled}
                 />
                 {error && (
                   <p className="mt-1 truncate px-1 text-center font-mono text-[10px] text-loma-danger">

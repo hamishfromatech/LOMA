@@ -1,6 +1,11 @@
 "use client"
 
 import { MicButton } from "@/components/mic-button"
+import {
+  FileUpload,
+  FileUploadContent,
+  FileUploadTrigger,
+} from "@/components/ui/file-upload"
 import { Button } from "@/components/ui/button"
 import {
   PromptInput,
@@ -16,7 +21,17 @@ import {
 } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 import type { ModelOption, SettingsPayload } from "@/lib/types"
-import { ArrowUp, ChevronDown, HardDrive, RefreshCw, Square, Volume2, VolumeX } from "lucide-react"
+import {
+  ArrowUp,
+  ChevronDown,
+  HardDrive,
+  ImagePlus,
+  RefreshCw,
+  Square,
+  Volume2,
+  VolumeX,
+  X,
+} from "lucide-react"
 
 type Props = {
   value: string
@@ -33,6 +48,10 @@ type Props = {
   onRefreshModels: () => void
   modelsLoading?: boolean
   variant?: "hero" | "docked"
+  attachments: { id: string; dataUrl: string }[]
+  onAddAttachments: (files: File[]) => void
+  onRemoveAttachment: (id: string) => void
+  visionEnabled: boolean
 }
 
 export function Composer({
@@ -50,11 +69,21 @@ export function Composer({
   onRefreshModels,
   modelsLoading = false,
   variant = "docked",
+  attachments,
+  onAddAttachments,
+  onRemoveAttachment,
+  visionEnabled,
 }: Props) {
-  const ready = value.trim().length > 0
+  const ready = value.trim().length > 0 || attachments.length > 0
 
   return (
     <div className="w-full">
+      <FileUpload
+        onFilesAdded={onAddAttachments}
+        accept="image/png,image/jpeg,image/webp,image/gif"
+        multiple
+        disabled={!visionEnabled}
+      >
       <PromptInput
         value={value}
         onValueChange={onValueChange}
@@ -68,6 +97,32 @@ export function Composer({
           variant === "hero" && "shadow-[0_1px_0_rgba(255,250,242,0.05)_inset,0_28px_70px_-34px_rgba(0,0,0,1)]",
         )}
       >
+        {attachments.length > 0 && (
+          <div className="flex flex-wrap gap-2 px-2 pb-1 pt-1">
+            {attachments.map((attachment) => (
+              <div
+                key={attachment.id}
+                className="group/thumb relative size-16 overflow-hidden rounded-lg border border-loma-line bg-black/40"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={attachment.dataUrl}
+                  alt="Attached image"
+                  className="size-full object-cover"
+                />
+                <button
+                  type="button"
+                  onClick={() => onRemoveAttachment(attachment.id)}
+                  aria-label="Remove image"
+                  className="absolute right-1 top-1 grid size-5 place-items-center rounded-full bg-black/70 text-loma-ink opacity-0 transition group-hover/thumb:opacity-100 focus-visible:opacity-100"
+                >
+                  <X className="size-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         <PromptInputTextarea
           id="loma-prompt"
           name="message"
@@ -83,6 +138,20 @@ export function Composer({
 
         <PromptInputActions className="justify-between px-0 pb-0 pt-0.5">
           <div className="flex items-center gap-1">
+            <FileUploadTrigger
+              aria-label={visionEnabled ? "Attach an image" : "This model cannot read images"}
+              title={visionEnabled ? "Attach an image" : "This model cannot read images"}
+              disabled={!visionEnabled}
+              className={cn(
+                "grid size-7 place-items-center rounded-full transition",
+                visionEnabled
+                  ? "text-loma-dim hover:bg-white/[0.06] hover:text-loma-ink"
+                  : "cursor-not-allowed text-loma-faint/40",
+              )}
+            >
+              <ImagePlus className="size-4" />
+            </FileUploadTrigger>
+
             <button
               type="button"
               onClick={onToggleVoice}
@@ -207,6 +276,17 @@ export function Composer({
           </div>
         </PromptInputActions>
       </PromptInput>
+
+      <FileUploadContent>
+        <div className="pointer-events-none rounded-2xl border-2 border-dashed border-loma-accent/50 bg-loma-bg/70 px-10 py-8 text-center">
+          <ImagePlus className="mx-auto mb-3 size-6 text-loma-accent" />
+          <p className="text-[14px] text-loma-ink">Drop an image to show LOMA</p>
+          <p className="mt-1 font-mono text-[10.5px] text-loma-faint">
+            png · jpeg · webp · gif — up to 4 per turn
+          </p>
+        </div>
+      </FileUploadContent>
+      </FileUpload>
 
       <div className="mt-2 flex items-center justify-between px-2.5 font-mono text-[10px] text-loma-faint/75">
         <span className="hidden items-center gap-1.5 sm:flex">

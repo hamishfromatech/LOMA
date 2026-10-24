@@ -260,6 +260,7 @@ class VoicePipeline:
         use_tools: bool = True,
         think: bool = False,
         tool_batch: ToolBatch | None = None,
+        images: list[str] | None = None,
         audio_format: str = "wav",
     ) -> Iterator[dict]:
         """Run one turn and yield it as a stream of plain dicts.
@@ -271,12 +272,22 @@ class VoicePipeline:
             tool_result  what the tool returned
             delta        a fragment of the reply
             audio        one spoken sentence, base64 PCM
+            error        something the user needs to know about
             done         the final reply plus timings
 
         The CLI and the HTTP API both consume this iterator.
         """
         started = time.perf_counter()
         control = ControlMatch()
+
+        if images and not self._supports_vision():
+            yield {
+                "type": "error",
+                "message": (
+                    f"{self.settings.llm_model} cannot read images. Switch to a "
+                    "vision model in the model picker."
+                ),
+            }
 
         # -- 1. deterministic control phrases --------------------------
         if route:
@@ -327,7 +338,9 @@ class VoicePipeline:
 
         splitter = ThinkingSplitter()
         try:
-            for delta in self.agent.respond(user_text, think=think, extra_context=extra_context):
+            for delta in self.agent.respond(
+                user_text, think=think, extra_context=extra_context, images=images
+            ):
                 if not first_token:
                     first_token = time.perf_counter() - started
                 parts.append(delta)
@@ -539,6 +552,18 @@ class VoicePipeline:
             }
 
         return ToolBatch(calls=calls) if calls else None
+
+    def _supports_vision(self) -> bool:
+        """Does the selected model read images? Unknown counts as no.
+
+        Checked per turn rather than cached: the model can be switched from the
+        picker between one turn and the next.
+        """
+        try:
+            info = self.client.model_info(self.settings.llm_model)
+        except Exception:  # noqa: BLE001 - never block a turn on discovery
+            return False
+        return "vision" in info["capabilities"]
 
     def _skill_note(self) -> str:
         """The body of a skill loaded this turn, and nothing else.

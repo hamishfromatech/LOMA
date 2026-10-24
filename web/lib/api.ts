@@ -71,6 +71,8 @@ export async function streamChat(
     conversationId: string
     speak?: boolean
     signal?: AbortSignal
+    /** Data URLs ("data:image/png;base64,…"); the API strips the prefix. */
+    images?: string[]
   },
 ): Promise<void> {
   const response = await fetch(
@@ -78,7 +80,11 @@ export async function streamChat(
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, speak: options.speak ?? true }),
+      body: JSON.stringify({
+        message,
+        speak: options.speak ?? true,
+        images: options.images?.length ? options.images : undefined,
+      }),
       signal: options.signal,
     },
   )

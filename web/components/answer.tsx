@@ -177,10 +177,32 @@ export function AnswerMessage({ message }: { message: ChatMessage }) {
 }
 
 export function UserMessage({ message }: { message: ChatMessage }) {
+  // The image is not persisted with the conversation, so it survives exactly as
+  // long as this component does — which is the honest behaviour: reload, and the
+  // transcript has the words but not the picture.
+  const images = message.images ?? []
+
   return (
     <div className="loma-rise flex justify-end">
-      <div className="max-w-[82%] whitespace-pre-wrap break-words rounded-[16px] rounded-br-[6px] border border-loma-line bg-loma-raise px-3.5 py-2.5 text-[14.5px] leading-relaxed text-loma-ink shadow-[0_1px_0_rgba(255,250,242,0.04)_inset]">
-        {message.content}
+      <div className="max-w-[82%] space-y-2">
+        {images.length > 0 && (
+          <div className="flex flex-wrap justify-end gap-2">
+            {images.map((src, index) => (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                key={index}
+                src={src}
+                alt={`Attached image ${index + 1}`}
+                className="max-h-44 rounded-xl border border-loma-line object-cover"
+              />
+            ))}
+          </div>
+        )}
+        {message.content && (
+          <div className="whitespace-pre-wrap break-words rounded-[16px] rounded-br-[6px] border border-loma-line bg-loma-raise px-3.5 py-2.5 text-[14.5px] leading-relaxed text-loma-ink shadow-[0_1px_0_rgba(255,250,242,0.04)_inset]">
+            {message.content}
+          </div>
+        )}
       </div>
     </div>
   )

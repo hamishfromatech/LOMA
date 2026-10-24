@@ -116,7 +116,10 @@ def create_app() -> Flask:
         if not message:
             return jsonify({"error": "message is required"}), 400
         speak = bool(payload.get("speak", True))
-        return _stream_turn(get_runtime(), conversation_id, message, speak)
+        images, problem = _read_images(payload)
+        if problem:
+            return jsonify({"error": problem}), 400
+        return _stream_turn(get_runtime(), conversation_id, message, speak, images)
 
     @app.post("/api/chat")
     def chat() -> Response:
@@ -126,6 +129,9 @@ def create_app() -> Flask:
         if not message:
             return jsonify({"error": "message is required"}), 400
         speak = bool(payload.get("speak", True))
+        images, problem = _read_images(payload)
+        if problem:
+            return jsonify({"error": problem}), 400
 
         runtime = get_runtime()
         existing = runtime.list_conversations()
@@ -133,7 +139,7 @@ def create_app() -> Flask:
             str(payload.get("conversation_id") or "")
             or (existing[0]["id"] if existing else runtime.new_conversation()["id"])
         )
-        return _stream_turn(runtime, conversation_id, message, speak)
+        return _stream_turn(runtime, conversation_id, message, speak, images)
 
     # -- memory --------------------------------------------------------
     @app.get("/api/memory")
@@ -288,14 +294,58 @@ def create_app() -> Flask:
     return app
 
 
-def _stream_turn(runtime, conversation_id: str, message: str, speak: bool) -> Response:
+MAX_IMAGES = 4
+MAX_IMAGE_BYTES = 8 * 1024 * 1024
+
+
+def _read_images(payload: dict) -> tuple[list[str], str | None]:
+    """Validate the ``images`` field: base64 only, at most four, size-capped.
+
+    The UI sends data URLs ("data:image/png;base64,…") because that is what a
+    FileReader gives you, and Ollama wants the bare base64 payload.
+    """
+    raw = payload.get("images")
+    if raw is None:
+        return [], None
+    if not isinstance(raw, list):
+        return [], "images must be a list of base64 strings"
+    if len(raw) > MAX_IMAGES:
+        return [], f"at most {MAX_IMAGES} images per turn"
+
+    cleaned: list[str] = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, str) or not item:
+            return [], f"image {index} is not a base64 string"
+        value = item.strip()
+        if value.startswith("data:"):
+            _, _, value = value.partition(",")
+        value = "".join(value.split())
+        if not value:
+            return [], f"image {index} is empty"
+        # 4/3 is the base64 expansion; this catches an oversized upload before
+        # it reaches the model rather than after a 20-second wait.
+        if len(value) * 3 / 4 > MAX_IMAGE_BYTES:
+            return [], f"image {index} is larger than {MAX_IMAGE_BYTES // (1024 * 1024)} MB"
+        cleaned.append(value)
+    return cleaned, None
+
+
+def _stream_turn(
+    runtime,
+    conversation_id: str,
+    message: str,
+    speak: bool,
+    images: list[str] | None = None,
+) -> Response:
     """Turn a conversation turn into an SSE response."""
 
     @stream_with_context
     def events():
         try:
             runtime.warm()
-            for event in runtime.chat(conversation_id, message, speak=speak):
+            for event in runtime.chat(
+                conversation_id, message, speak=speak, images=images
+            ):
                 yield sse(event)
         except KeyError:
             yield sse({"type": "error", "message": "no such conversation"})

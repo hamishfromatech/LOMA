@@ -121,6 +121,12 @@ A ChatGPT/Open-WebUI-shaped interface built on
 - **Live tool cards** — the call appears while it runs, then its result.
 - **One trace line per answer** — route, tool time, first token, first audio,
   total and context. Expand it for the numbers.
+- **Images** — attach one with the button, or drop it anywhere on the window.
+  The file goes to the model as base64 on the message, which is what Ollama's
+  vision models take. The attach button is disabled when the selected model has
+  no `vision` capability, and the API says so rather than dropping the image.
+  Images are **one-shot**: they are not written into the conversation file, so a
+  reload keeps the words and loses the picture.
 - **Spoken replies** — Phonon generates one WAV per sentence during the stream;
   the browser queues and plays them.
 - **Settings page** — language model, voice (with preview), MCP servers
@@ -134,7 +140,7 @@ A ChatGPT/Open-WebUI-shaped interface built on
 | `GET` | `/api/models` | chat models, discovered from Ollama (`/api/tags`, then `/v1/models`) |
 | `GET/POST` | `/api/conversations` | list / create |
 | `GET/PATCH/DELETE` | `/api/conversations/<id>` | open / rename / delete |
-| `POST` | `/api/conversations/<id>/chat` | one turn, Server-Sent Events |
+| `POST` | `/api/conversations/<id>/chat` | one turn, Server-Sent Events; optional `images` (base64, ≤4, ≤8 MB each) |
 | `GET/PUT/DELETE` | `/api/memory` | read / write / clear `MEMORY.md` |
 | `POST` | `/api/transcribe` | audio → text (faster-whisper) |
 | `POST` | `/api/speak` | text → WAV (Phonon) |

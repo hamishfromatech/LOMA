@@ -209,6 +209,7 @@ class Runtime:
         message: str,
         *,
         speak: bool = True,
+        images: list[str] | None = None,
     ) -> Iterator[dict]:
         """Run one turn inside a conversation and persist the result."""
         conversation = self.store.get(conversation_id)
@@ -226,7 +227,7 @@ class Runtime:
                 self.pipeline.memory = self.memory if self.settings.memory_enabled else None
 
                 for event in self.pipeline.stream_events(
-                    message, speak=False, emit_audio=speak
+                    message, speak=False, emit_audio=speak, images=images
                 ):
                     if event.get("type") == "memory":
                         stored_memory = True
