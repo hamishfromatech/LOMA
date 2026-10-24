@@ -1,5 +1,7 @@
 # LOMA — Local Offline Mini Assistant
 
+![tests](https://github.com/hamishfromatech/LOMA/actions/workflows/test.yml/badge.svg)
+
 A complete voice assistant that runs on your own machine with **no network
 access at runtime**, on a **128k context window**, in about **1.7 GB of RAM** —
 with a chat UI, persistent conversations, MCP tools and a long-term memory kept
