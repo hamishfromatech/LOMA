@@ -1,0 +1,206 @@
+"""Typed configuration for the LOMA pipeline.
+
+Every setting can be overridden by an environment variable so the same code
+runs on a laptop, in a test, or on a headless box. Nothing here touches the
+network — importing this module is free.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, replace
+from pathlib import Path
+
+from loma.context import context_window_for_ram
+
+# --------------------------------------------------------------------------
+# Defaults
+# --------------------------------------------------------------------------
+
+DEFAULT_SYSTEM_PROMPT = (
+    "You are LOMA, a helpful voice assistant that runs entirely offline on "
+    "the user's own device. Your words are spoken aloud by a text-to-speech "
+    "engine, so keep every answer to one to three short, natural sentences. "
+    "Never use markdown, bullet points, code blocks, emoji, or URLs. Spell out "
+    "numbers and symbols the way a person would say them. If you do not know "
+    "something, say so briefly instead of guessing."
+)
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _env(name: str, default):
+    """Read an env var and coerce it to the type of ``default``."""
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    if isinstance(default, bool):
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+    try:
+        return type(default)(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+# --------------------------------------------------------------------------
+# Settings
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Settings:
+    """Immutable, fully-resolved configuration for one process."""
+
+    # Ollama
+    ollama_host: str = "http://localhost:11434"
+    llm_model: str = "qwen3.5:0.8b"
+    tts_model: str = "phonon"
+    tts_voice: str = "default"
+    # Keep the models resident so a turn never pays a cold-load penalty.
+    keep_alive: str = "30m"
+
+    # Decision model — a System One model used as a ~150 ms router.
+    # `loma-decision` is Tev1 0.8B q8_0 with a 1024-token context, built by
+    # scripts/create_decision_model.sh. The published tag is tev1:0.8b-q8_0,
+    # which defaults to 8192 tokens and costs ~100 MB more for no benefit.
+    decision_model: str = "loma-decision"
+    decision_enabled: bool = True
+    # Below this probability the router abstains and the LLM answers instead.
+    decision_min_confidence: float = 0.55
+    # Router decides whether a turn deserves the LLM's thinking step.
+    adaptive_thinking: bool = False
+
+    # MCP tools — selected by the router so their schemas never reach the LLM
+    # wholesale. Only the chosen tool's schema is used, and only for argument
+    # extraction.
+    mcp_enabled: bool = True
+    mcp_config: Path = _PROJECT_ROOT / "mcp.json"
+    tool_min_confidence: float = 0.50
+    tool_max_tools: int = 40
+
+    # Speech to text
+    stt_model: str = "tiny"
+    stt_device: str = "cpu"
+    stt_compute_type: str = "int8"
+    stt_language: str | None = None
+    models_dir: Path = _PROJECT_ROOT / "models"
+
+    # Generation
+    # 128k minimum; 256k on machines with more than 8 GB of RAM. See
+    # context.py and docs/RAM_BUDGET.md.
+    num_ctx: int = 131_072
+    max_tokens: int = 256
+    temperature: float = 0.6
+    history_turns: int = 6
+    system_prompt: str = DEFAULT_SYSTEM_PROMPT
+
+    # Context compaction — summarise old turns before the window fills up.
+    compact_enabled: bool = True
+    compact_at: float = 0.60  # fraction of num_ctx that triggers compaction
+    # Absolute ceiling on *live* tokens. The window is 128k, but the KV cache
+    # is allocated for what we actually use — so keeping live context near 8k
+    # keeps RAM near 3 GB while the 128k window stays available for a one-off
+    # long input. Raise this if you want long documents to stay uncompacted.
+    compact_target_tokens: int = 8_192
+    compact_keep_turns: int = 2  # recent exchanges kept verbatim
+    compact_max_tokens: int = 320
+
+    # Audio + VAD
+    sample_rate: int = 16_000
+    silence_db: float = -45.0
+    silence_ms: int = 800
+    max_utterance_s: float = 15.0
+    min_utterance_ms: int = 300
+    mic_device: int | None = None
+    tts_sample_rate: int = 24_000  # Phonon emits 24 kHz mono PCM
+
+    # Safety
+    # 3 GB, measured: 1.3 GB LLM + 1.2 GB router + 121 MB TTS + ~280 MB Python.
+    # See docs/RAM_BUDGET.md.
+    memory_budget_mb: int = 3072
+    offline: bool = False
+
+    # ------------------------------------------------------------------
+    @property
+    def whisper_dir(self) -> Path:
+        """Where faster-whisper weights are cached."""
+        return self.models_dir / "whisper"
+
+    @property
+    def compact_threshold_tokens(self) -> int:
+        """Token count at which compaction triggers — whichever comes first.
+
+        ``compact_at`` guards the window; ``compact_target_tokens`` guards the
+        KV cache. On a 128k window the second one is almost always the one
+        that fires, which is exactly what keeps memory bounded.
+        """
+        return min(int(self.num_ctx * self.compact_at), self.compact_target_tokens)
+
+    def with_(self, **overrides) -> Settings:
+        """Return a copy with a few fields replaced (dataclass is frozen)."""
+        return replace(self, **overrides)
+
+    # ------------------------------------------------------------------
+    @classmethod
+    def from_env(cls) -> Settings:
+        """Build settings from the environment, falling back to defaults."""
+        models_dir = Path(_env("LOMA_MODELS_DIR", str(_PROJECT_ROOT / "models")))
+        if not models_dir.is_absolute():
+            models_dir = _PROJECT_ROOT / models_dir
+
+        mcp_config = Path(_env("LOMA_MCP_CONFIG", str(_PROJECT_ROOT / "mcp.json")))
+        if not mcp_config.is_absolute():
+            mcp_config = _PROJECT_ROOT / mcp_config
+
+        mic_raw = os.getenv("LOMA_MIC_DEVICE", "").strip()
+        mic_device: int | None = None
+        if mic_raw:
+            try:
+                mic_device = int(mic_raw)
+            except ValueError:
+                mic_device = None
+
+        language = os.getenv("LOMA_STT_LANGUAGE", "").strip() or None
+
+        # 0 means "let the context policy decide from physical RAM".
+        num_ctx = _env("LOMA_NUM_CTX", 0)
+        if not num_ctx:
+            num_ctx = context_window_for_ram()
+
+        return cls(
+            ollama_host=_env("OLLAMA_HOST", "http://localhost:11434").rstrip("/"),
+            llm_model=_env("LOMA_LLM_MODEL", "qwen3.5:0.8b"),
+            tts_model=_env("LOMA_TTS_MODEL", "phonon"),
+            tts_voice=_env("LOMA_TTS_VOICE", "default"),
+            keep_alive=_env("LOMA_KEEP_ALIVE", "30m"),
+            decision_model=_env("LOMA_DECISION_MODEL", "loma-decision"),
+            decision_enabled=_env("LOMA_DECISION_ENABLED", True),
+            decision_min_confidence=_env("LOMA_DECISION_MIN_CONFIDENCE", 0.55),
+            adaptive_thinking=_env("LOMA_ADAPTIVE_THINKING", False),
+            mcp_enabled=_env("LOMA_MCP_ENABLED", True),
+            mcp_config=mcp_config,
+            tool_min_confidence=_env("LOMA_TOOL_MIN_CONFIDENCE", 0.50),
+            tool_max_tools=_env("LOMA_TOOL_MAX_TOOLS", 40),
+            stt_model=_env("LOMA_STT_MODEL", "tiny"),
+            stt_device=_env("LOMA_STT_DEVICE", "cpu"),
+            stt_compute_type=_env("LOMA_STT_COMPUTE_TYPE", "int8"),
+            stt_language=language,
+            models_dir=models_dir,
+            num_ctx=num_ctx,
+            max_tokens=_env("LOMA_MAX_TOKENS", 256),
+            temperature=_env("LOMA_TEMPERATURE", 0.6),
+            history_turns=_env("LOMA_HISTORY_TURNS", 6),
+            compact_enabled=_env("LOMA_COMPACT_ENABLED", True),
+            compact_at=_env("LOMA_COMPACT_AT", 0.60),
+            compact_target_tokens=_env("LOMA_COMPACT_TARGET_TOKENS", 8_192),
+            compact_keep_turns=_env("LOMA_COMPACT_KEEP_TURNS", 2),
+            compact_max_tokens=_env("LOMA_COMPACT_MAX_TOKENS", 320),
+            sample_rate=_env("LOMA_SAMPLE_RATE", 16_000),
+            silence_db=_env("LOMA_SILENCE_DB", -45.0),
+            silence_ms=_env("LOMA_SILENCE_MS", 800),
+            max_utterance_s=_env("LOMA_MAX_UTTERANCE_S", 15.0),
+            min_utterance_ms=_env("LOMA_MIN_UTTERANCE_MS", 300),
+            mic_device=mic_device,
+            memory_budget_mb=_env("LOMA_MEMORY_BUDGET_MB", 3072),
+            offline=_env("LOMA_OFFLINE", False),
+        )

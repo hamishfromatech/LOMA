@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Local model cache (re-downloaded by `phonon doctor --pull`)
+models/
+
+# Recorded / generated audio
+*.wav
+*.pcm
+recordings/
+output/
+
+# Env + editor
+.env
+.DS_Store
+.idea/
+.vscode/
+.ruff_cache/
+.pytest_cache/

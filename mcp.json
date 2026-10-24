@@ -1,0 +1,15 @@
+{
+  "$comment": "MCP servers LOMA can call. Same shape as Claude Desktop's config. ${LOMA_ROOT} and ${LOMA_PYTHON} are expanded by LOMA before the servers start.",
+  "mcpServers": {
+    "local": {
+      "command": "${LOMA_PYTHON}",
+      "args": [
+        "${LOMA_ROOT}/examples/mcp_local_tools.py"
+      ],
+      "env": {
+        "FASTMCP_SHOW_SERVER_BANNER": "false",
+        "FASTMCP_LOG_LEVEL": "WARNING"
+      }
+    }
+  }
+}
