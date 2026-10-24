@@ -4,6 +4,8 @@ By [hamishfromatech](https://github.com/hamishfromatech)
 
 ![tests](https://github.com/hamishfromatech/LOMA/actions/workflows/test.yml/badge.svg)
 
+![LOMA — a small assistant on a desk at night, glowing teal, with an unplugged network cable](docs/assets/loma-cover.png)
+
 A complete voice assistant that runs on your own machine with **no network
 access at runtime**, on a **128k context window**, in about **1.7 GB of RAM** —
 with a chat UI, persistent conversations, MCP tools and a long-term memory kept
