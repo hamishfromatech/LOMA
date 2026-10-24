@@ -141,6 +141,8 @@ export type SettingsPayload = {
   llm_model: string
   tts_voice: string
   temperature: number
+  /** Speak replies aloud. Persisted, so it survives a reload. */
+  speak_replies: boolean
   options: {
     llm_models: ModelOption[]
     voices: string[]

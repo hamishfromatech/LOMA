@@ -130,8 +130,10 @@ A ChatGPT/Open-WebUI-shaped interface built on
   no `vision` capability, and the API says so rather than dropping the image.
   Images are **one-shot**: they are not written into the conversation file, so a
   reload keeps the words and loses the picture.
-- **Spoken replies** — Phonon generates one WAV per sentence during the stream;
-  the browser queues and plays them.
+- **Spoken replies, switchable** — Phonon generates one WAV per sentence during
+  the stream; the browser queues and plays them. The toggle in the composer (and
+  the switch in Settings) is stored in `loma.prefs.json`, so "text only" survives
+  a reload and applies to turns that never mention it.
 - **First-run setup** — five questions (name, what you work on, what you want
   help with, how you like to be answered, anything else) written straight into
   `MEMORY.md` as facts. Skippable, re-runnable from Settings, and it changes the

@@ -96,6 +96,9 @@ class Settings:
     # about one turn in three ("The user asks what time it is. I have…"), which is
     # spoken aloud; at 0.2 it did not happen in six consecutive tool turns.
     temperature: float = 0.2
+    #: Speak the answer aloud. A user preference, so the composer toggle and the
+    #: Settings switch both write it, and it survives a reload.
+    speak_replies: bool = True
     history_turns: int = 6
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
 
@@ -237,6 +240,11 @@ class Settings:
             num_ctx=num_ctx,
             max_tokens=_env("LOMA_MAX_TOKENS", 256),
             temperature=prefs.get("temperature") if prefs.get("temperature") is not None else _env("LOMA_TEMPERATURE", 0.2),
+            # `in prefs`, not `prefs.get(...)`: False is a real answer, and
+            # `or` would quietly turn it back on.
+            speak_replies=prefs["speak_replies"]
+            if "speak_replies" in prefs
+            else _env("LOMA_SPEAK_REPLIES", True),
             history_turns=_env("LOMA_HISTORY_TURNS", 6),
             compact_enabled=_env("LOMA_COMPACT_ENABLED", True),
             compact_at=_env("LOMA_COMPACT_AT", 0.60),

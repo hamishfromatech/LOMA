@@ -117,7 +117,9 @@ def create_app() -> Flask:
         message = str(payload.get("message", "")).strip()
         if not message:
             return jsonify({"error": "message is required"}), 400
-        speak = bool(payload.get("speak", True))
+        # Absent means "use the stored preference" rather than "yes".
+        speak = payload.get("speak")
+        speak = None if speak is None else bool(speak)
         images, problem = read_images(payload)
         if problem:
             return jsonify({"error": problem}), 400
@@ -130,7 +132,8 @@ def create_app() -> Flask:
         message = str(payload.get("message", "")).strip()
         if not message:
             return jsonify({"error": "message is required"}), 400
-        speak = bool(payload.get("speak", True))
+        speak = payload.get("speak")
+        speak = None if speak is None else bool(speak)
         images, problem = read_images(payload)
         if problem:
             return jsonify({"error": problem}), 400
@@ -198,6 +201,7 @@ def create_app() -> Flask:
                 llm_model=payload.get("llm_model"),
                 tts_voice=payload.get("tts_voice"),
                 temperature=payload.get("temperature"),
+                speak_replies=payload.get("speak_replies"),
             )
         except Exception as exc:  # noqa: BLE001
             log.exception("could not update settings")
@@ -320,7 +324,7 @@ def _stream_turn(
     runtime,
     conversation_id: str,
     message: str,
-    speak: bool,
+    speak: bool | None,
     images: list[str] | None = None,
 ) -> Response:
     """Turn a conversation turn into an SSE response."""

@@ -79,3 +79,24 @@ def test_data_paths_live_under_the_data_dir(tmp_path):
     settings = Settings(data_dir=tmp_path)
     assert settings.memory_file == tmp_path / "memory" / "MEMORY.md"
     assert settings.conversations_dir == tmp_path / "conversations"
+
+
+def test_speak_replies_off_survives_the_round_trip(monkeypatch, tmp_path):
+    """False is a real answer.
+
+    `prefs.get("speak_replies") or default` would read a stored false as missing
+    and quietly turn the voice back on, which is the sort of bug a user reports as
+    "the toggle doesn't stick".
+    """
+    prefs = tmp_path / "prefs.json"
+    prefs.write_text('{"speak_replies": false}')
+    monkeypatch.setenv("LOMA_PREFS", str(prefs))
+    assert Settings.from_env().speak_replies is False
+
+    prefs.write_text('{"speak_replies": true}')
+    assert Settings.from_env().speak_replies is True
+
+
+def test_speak_replies_defaults_on(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOMA_PREFS", str(tmp_path / "missing.json"))
+    assert Settings.from_env().speak_replies is True

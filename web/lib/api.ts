@@ -133,6 +133,7 @@ export function updateSettings(patch: {
   llm_model?: string
   tts_voice?: string
   temperature?: number
+  speak_replies?: boolean
 }): Promise<SettingsPayload> {
   return json<SettingsPayload>("/api/settings", {
     method: "POST",

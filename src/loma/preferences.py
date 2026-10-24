@@ -21,7 +21,7 @@ from typing import Any
 log = logging.getLogger(__name__)
 
 #: Keys the Settings page may write.
-EDITABLE = ("llm_model", "tts_voice", "temperature")
+EDITABLE = ("llm_model", "tts_voice", "temperature", "speak_replies")
 
 
 def load_preferences(path: Path) -> dict[str, Any]:

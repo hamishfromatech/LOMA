@@ -234,7 +234,11 @@ export function ChatView() {
     void refreshConversations()
     void refreshModels()
     void getSettings()
-      .then(setSettings)
+      .then((loaded) => {
+        setSettings(loaded)
+        // The stored preference wins over the optimistic default.
+        setVoiceOn(loaded.speak_replies)
+      })
       .catch(() => undefined)
     const timer = window.setInterval(refreshStatus, 10_000)
     return () => window.clearInterval(timer)
@@ -320,6 +324,16 @@ export function ChatView() {
       }
     },
     [activeId, newChat],
+  )
+
+  const toggleVoice = useCallback(
+    (next: boolean) => {
+      setVoiceOn(next)
+      void updateSettings({ speak_replies: next })
+        .then(setSettings)
+        .catch(() => undefined)
+    },
+    [],
   )
 
   const changeModel = useCallback(
@@ -589,7 +603,7 @@ export function ChatView() {
                 busy={busy}
                 onStop={stopTurn}
                 voiceOn={voiceOn}
-                onToggleVoice={() => setVoiceOn((value) => !value)}
+                onToggleVoice={() => toggleVoice(!voiceOn)}
                 onTranscript={(text) => void send(text)}
                 settings={settings}
                 models={models}
@@ -670,7 +684,7 @@ export function ChatView() {
                   busy={busy}
                   onStop={stopTurn}
                   voiceOn={voiceOn}
-                  onToggleVoice={() => setVoiceOn((value) => !value)}
+                  onToggleVoice={() => toggleVoice(!voiceOn)}
                   onTranscript={(text) => void send(text)}
                   settings={settings}
                   models={models}

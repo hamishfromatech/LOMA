@@ -94,13 +94,19 @@ class Runtime:
         llm_model: str | None = None,
         tts_voice: str | None = None,
         temperature: float | None = None,
+        speak_replies: bool | None = None,
     ) -> dict:
         if temperature is not None:
             temperature = min(1.5, max(0.0, float(temperature)))
 
         save_preferences(
             self.settings.prefs_path,
-            {"llm_model": llm_model, "tts_voice": tts_voice, "temperature": temperature},
+            {
+                "llm_model": llm_model,
+                "tts_voice": tts_voice,
+                "temperature": temperature,
+                "speak_replies": speak_replies,
+            },
         )
 
         previous_model = self.settings.llm_model
@@ -229,6 +235,7 @@ class Runtime:
             "llm_model": self.settings.llm_model,
             "tts_voice": self.settings.tts_voice,
             "temperature": self.settings.temperature,
+            "speak_replies": self.settings.speak_replies,
             "options": {"llm_models": models, "voices": voices},
             "mcp": self.mcp_overview(),
             "memory": self.memory_payload(),
@@ -259,7 +266,7 @@ class Runtime:
         conversation_id: str,
         message: str,
         *,
-        speak: bool = True,
+        speak: bool | None = None,
         images: list[str] | None = None,
     ) -> Iterator[dict]:
         """Run one turn inside a conversation and persist the result."""
@@ -278,7 +285,10 @@ class Runtime:
                 self.pipeline.memory = self.memory if self.settings.memory_enabled else None
 
                 for event in self.pipeline.stream_events(
-                    message, speak=False, emit_audio=speak, images=images
+                    message,
+                    speak=False,
+                    emit_audio=self.settings.speak_replies if speak is None else speak,
+                    images=images,
                 ):
                     if event.get("type") == "memory":
                         stored_memory = True

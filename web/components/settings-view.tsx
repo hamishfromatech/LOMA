@@ -145,7 +145,12 @@ export function SettingsView() {
   }, [])
 
   const change = useCallback(
-    async (patch: { llm_model?: string; tts_voice?: string; temperature?: number }) => {
+    async (patch: {
+      llm_model?: string
+      tts_voice?: string
+      temperature?: number
+      speak_replies?: boolean
+    }) => {
       setBusy(Object.keys(patch)[0] ?? "save")
       setError(null)
       try {
@@ -441,6 +446,46 @@ export function SettingsView() {
             The list comes from the speech model itself. Phonon adds named voices
             as it ships them; this build offers {settings.options.voices.length}.
           </p>
+        </Section>
+
+        {/* ---------------------------------------------------------- */}
+        <Section
+          title="Spoken replies"
+          description="Whether LOMA reads its answers out loud. The same switch sits in the composer, next to the microphone."
+        >
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-[13px] text-loma-ink">
+                {settings.speak_replies ? "Speaking replies" : "Text only"}
+              </p>
+              <p className="mt-1 max-w-md text-[11.5px] leading-relaxed text-loma-faint">
+                {settings.speak_replies
+                  ? "Each sentence is sent to the voice model as it is written, so playback starts before the answer finishes."
+                  : "Answers arrive as text only. Nothing is sent to the speech model, which keeps the turn a little faster and quieter."}
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={settings.speak_replies}
+              aria-label="Speak replies aloud"
+              onClick={() => void change({ speak_replies: !settings.speak_replies })}
+              disabled={busy !== null}
+              className={cn(
+                "relative h-6 w-11 shrink-0 rounded-full border transition-colors",
+                settings.speak_replies
+                  ? "border-loma-accent/40 bg-loma-accent/80"
+                  : "border-loma-line bg-white/[0.08]",
+              )}
+            >
+              <span
+                className={cn(
+                  "absolute top-[2px] size-[18px] rounded-full bg-[#14120f] transition-all duration-150",
+                  settings.speak_replies ? "left-[22px]" : "left-[2px]",
+                )}
+              />
+            </button>
+          </div>
         </Section>
 
         {/* ---------------------------------------------------------- */}
