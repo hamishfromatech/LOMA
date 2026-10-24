@@ -40,7 +40,7 @@ class MCPTool:
 
     @property
     def short_description(self) -> str:
-        """One line, trimmed — this is what the decision model scores."""
+        """One line, trimmed — this is what the tool router sees."""
         text = " ".join((self.description or "").split())
         return text[:220]
 
@@ -77,6 +77,66 @@ class ToolCall:
             f"The {self.tool.name} tool already ran and returned:\n{note}\n"
             "Answer the user's question using this result. Do not call the tool again."
         )
+
+
+@dataclass(slots=True)
+class ToolBatch:
+    """Every tool call made for one utterance, and the note the LLM sees."""
+
+    calls: list[ToolCall] = field(default_factory=list)
+
+    @property
+    def names(self) -> list[str]:
+        return [call.tool.name for call in self.calls]
+
+    @property
+    def failed(self) -> bool:
+        return any(call.error for call in self.calls)
+
+    @property
+    def latency_s(self) -> float:
+        return sum(call.latency_s for call in self.calls)
+
+    def as_prompt(self) -> str:
+        """One compact system note covering every call in the batch.
+
+        Deliberately not persisted: tool payloads must never accumulate in the
+        context window.
+        """
+        if not self.calls:
+            return ""
+        payload = [
+            {
+                "tool": call.tool.name,
+                "arguments": call.arguments,
+                "result": call.result,
+            }
+            for call in self.calls
+        ]
+        body = json.dumps(payload, ensure_ascii=False)
+        if self.failed:
+            return (
+                f"The requested tools ran but at least one failed:\n{body}\n"
+                "Tell the user briefly what did not work."
+            )
+        return (
+            f"The requested tools already ran and returned:\n{body}\n"
+            "Answer the user's question using these results. Do not call a tool again."
+        )
+
+    def as_dict(self) -> dict:
+        return {
+            "calls": [
+                {
+                    "tool": call.tool.name,
+                    "arguments": call.arguments,
+                    "result": call.result,
+                    "error": call.error,
+                    "latency_s": round(call.latency_s, 4),
+                }
+                for call in self.calls
+            ]
+        }
 
 
 # ---------------------------------------------------------------------------

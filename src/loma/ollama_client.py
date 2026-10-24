@@ -172,29 +172,6 @@ class OllamaClient:
         except ValueError as exc:
             raise OllamaError(f"model did not return valid JSON: {content[:200]}") from exc
 
-    # -- decision (System One) ------------------------------------------
-    def systemone(
-        self,
-        state: str | dict | list,
-        questions: dict[str, dict],
-        *,
-        keep_alive: str | None = None,
-    ) -> dict[str, Any]:
-        """Answer typed questions about ``state`` with the decision model.
-
-        Returns the raw response: ``{"answers": {...}, "usage": {...}}``.
-        Streaming and generation options are not supported by this endpoint.
-        """
-        payload: dict[str, Any] = {
-            "model": self.settings.decision_model,
-            "state": state,
-            "questions": questions,
-            "keep_alive": keep_alive or self.settings.keep_alive,
-        }
-        response = self._http.post("/v1/systemone", json=payload)
-        _raise_for_status(response)
-        return response.json()
-
     # -- text to speech -------------------------------------------------
     def speech_pcm(self, text: str, *, voice: str | None = None) -> Iterator[bytes]:
         """Stream raw 16-bit little-endian mono 24 kHz PCM for ``text``.

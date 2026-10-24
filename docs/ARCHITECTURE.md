@@ -1,7 +1,6 @@
 # Architecture
 
-LOMA is four processes' worth of work collapsed into a few hundred lines of
-Python:
+LOMA is four stages and two very small models:
 
 ```
                      ┌──────────────────────────────────────────────┐
@@ -15,38 +14,42 @@ Python:
                                      │ text
                                      ▼
                      ┌──────────────────────────────────────────────┐
-                     │ decision.py   tev1:0.8b  (System One)        │
-                     │   intent  : answer|stop|reset|repeat|exit    │
-                     │   tool    : <tool> | none                    │
+                     │ control.py  deterministic phrase lexicon     │
+                     │   stop | reset | repeat | exit | (answer)    │
                      └──────────────────────────────────────────────┘
-                        │              │                    │
-             fast action│              │tool chosen         │answer
-                        ▼              ▼                    ▼
-                   say()          tool_router.py       agent.py
-                   (no LLM)       arguments (JSON)     qwen3.5:0.8b
-                                       │                 128k window
-                                       ▼                    │
-                                  mcp_hub.py                │
-                                  FastMCP client            │
-                                       │                    │
-                                       └────► tool result ──┘
-                                                   │ answer
-                                                   ▼
-                                   pipeline.py  SentenceChunker
-                                                   │ per sentence
-                                                   ▼
-                                   audio.py  Speaker thread
-                                     phonon TTS → speakers
+                        │ fast action                    │ not a command
+                        ▼                                ▼
+                     say()                    ┌──────────────────────────┐
+                   (no LLM)                   │ tool_router.py  Needle 3 │
+                                              │  tool + arguments or none│
+                                              └──────────────────────────┘
+                                                   │ call          │ none
+                                                   ▼               │
+                                              mcp_hub.py           │
+                                              FastMCP client       │
+                                                   │ result         │
+                                                   └───────┬────────┘
+                                                           ▼
+                                              ┌──────────────────────────┐
+                                              │ agent.py   qwen3.5:0.8b  │
+                                              │ 128k window, compaction  │
+                                              └──────────────────────────┘
+                                                           │ sentences
+                                                           ▼
+                                              ┌──────────────────────────┐
+                                              │ audio.py  Speaker thread │
+                                              │ phonon TTS → speakers    │
+                                              └──────────────────────────┘
 ```
 
 ## Why each stage exists
 
 ### 1. VAD instead of a wake word
 
-A wake word needs a dedicated always-on model, which is another 100–300 MB.
-Energy-gated VAD is ~40 lines of numpy, costs nothing, and is honest about what
-it does. `UtteranceRecorder` is a pure state machine over fixed 30 ms frames,
-so it is unit-testable without a sound card.
+A wake word needs a dedicated always-on model — another 100–300 MB. Energy-gated
+VAD is ~40 lines of numpy, costs nothing, and is honest about what it does.
+`UtteranceRecorder` is a pure state machine over fixed 30 ms frames, so it is
+unit-testable without a sound card.
 
 The 300 ms **preroll** matters: without it, the first phoneme of every sentence
 is clipped and Whisper transcribes "ello" instead of "hello".
@@ -54,54 +57,79 @@ is clipped and Whisper transcribes "ello" instead of "hello".
 ### 2. faster-whisper tiny
 
 Tiny + int8 is ~80 MB of weights and handles a short utterance in well under a
-second on CPU. `beam_size=1` and `condition_on_previous_text=False` are set
-deliberately: greedy decoding is roughly twice as fast, and disabling the
-previous-text condition removes the classic Whisper hallucination loop on
-long silence.
+second on CPU. `beam_size=1` and `condition_on_previous_text=False` are
+deliberate: greedy decoding is roughly twice as fast, and disabling the
+previous-text condition removes Whisper's hallucination loop on long silence.
 
-### 3. The decision model is the whole trick
+### 3. Control phrases are not a model problem
 
-`/v1/systemone` answers *typed questions* about a state: `choice`, `noul`
-(yes/no), and `score`. It is not a chat model — it returns calibrated
-probabilities in one pass, in roughly 150 ms for a 0.8B model.
+This is the most important design decision in the repo.
 
-LOMA asks two questions about the same utterance:
+LOMA originally routed control phrases with `tev1:0.8b`, a System One decision
+model. It cost **1.2 GB** and still got the hard cases wrong:
 
-```json
-{
-  "intent": { "type": "choice", "criteria": { "answer": "...", "stop": "...", ... } },
-  "tool":   { "type": "choice", "criteria": { "roll_dice": "...", "none": "..." } }
-}
+| Utterance | Tev1 | LOMA lexicon |
+|---|---|---|
+| "stop" | `stop` 52% / `exit` 46% → abstained | `stop` |
+| "forget everything" | `stop` 51% (wrong) | `reset` |
+| "how are you" | — | `answer` |
+| "thanks, that's all" | — | `exit` |
+
+The fix is to stop treating four fixed words as a language problem. `control.py`
+normalises the utterance (lowercase, strip punctuation, remove filler words such
+as "please", "can", "you", "just") and then exact-matches it against a phrase
+set. That is 22 µs, zero RAM, and completely predictable.
+
+The filler removal is what makes it usable in speech:
+
+```
+"can you please just stop"  -> "stop"        -> stop
+"okay, be quiet"            -> "quiet"       -> stop
+"thanks, that's all"        -> "that's all"  -> exit
+"what does reset mean"      -> unchanged     -> answer
 ```
 
-Two consequences:
+Anything that is not an exact control phrase falls through. That is the safe
+direction to fail: a missed "stop" costs one spoken sentence; a false "stop"
+swallows a real question.
 
-* **Control phrases cost zero tokens.** "Stop", "start over", "say that again"
-  are resolved before the LLM is even considered.
-* **Tool schemas never enter the LLM prompt.** With 40 tools, a naive
-  tool-calling prompt carries 40 JSON schemas. Here the router sees one line
-  per tool, and the LLM sees one schema — and only when a tool was chosen.
+### 4. Needle 3 for tools
 
-### 4. The abstain rule
+[Needle](https://github.com/cactus-compute/needle) is an on-device automation
+model: a 35 MB weight file in an 8–29 MB engine, trained to turn a toolset and a
+sentence into **well-formed calls with the arguments already filled in**.
 
-A confidence floor alone is too blunt. `confidence` measures separation from the
-runner-up, so *"stop"* scores low when the runner-up is *"exit"* — even though
-both are cheap, non-generative outcomes.
+Two properties make it the right fit:
 
-`DecisionEngine._apply_confidence_floor` accepts a control intent when:
+* **Grammar-constrained decoding.** It compiles a byte-level grammar from the
+  tool schemas, so a call cannot be malformed and a number cannot land in a
+  string field.
+* **It refuses.** An off-topic request returns an empty call list with low
+  confidence instead of inventing a tool.
 
-1. probability **and** confidence both clear the floor, **or**
-2. the runner-up is *also* a fast action (nothing expensive can go wrong).
+Replacing the System One router and the LLM argument-extraction pass with Needle
+removed **1.2 GB of RAM and a whole generation** from every tool turn: tool
+routing is now ~60 ms and no tool schema ever enters the LLM prompt.
 
-Anything else falls through to the language model. A misread never swallows a
-real question.
+### 5. Tool design
 
-### 5. Tool arguments, constrained
+Needle is accurate only if the tools are described well. Three rules, measured
+on the demo server:
 
-Once a tool is chosen, the language model is called with Ollama's `format`
-parameter set to that tool's JSON schema. The model physically cannot reply with
-prose; it can only fill in the schema. Required keys are validated before the
-call — a missing key cancels the tool rather than calling it with holes.
+| Change | Result |
+|---|---|
+| `roll_dice(sides, count)` with no parameter docs | `sides=3, count=3` for "three twenty sided dice" — wrong |
+| same tool, `Args:` docs on both parameters | `sides=20, count=20` — still wrong |
+| split into `roll_die(sides)` with an `Args:` doc | `sides=20` — right, confidence 0.85 |
+
+So:
+
+1. **One tool per action.** Two numeric parameters on one tool is the failure
+   mode. Split them.
+2. **Describe every parameter.** FastMCP only emits parameter descriptions when
+   the docstring has an `Args:` section; without it Needle sees bare types.
+3. **Name it the way a user speaks it.** "roll a d20" should match a tool whose
+   description mentions a d20.
 
 ### 6. Overlapped speech
 
@@ -109,7 +137,7 @@ call — a missing key cancels the tool rather than calling it with holes.
 "Hi." rides along with the next sentence instead of costing a TTS round trip).
 Each sentence is handed to a `Speaker` thread that fetches the PCM and plays it.
 
-The result: audio starts at ~0.25 s while the model is still writing the second
+The result: audio starts at ~0.6 s while the model is still writing the second
 sentence.
 
 ### 7. Compaction
@@ -127,20 +155,31 @@ input, while the KV cache — which is what actually costs RAM — stays small.
 
 | Stage | Time |
 |---|---|
-| VAD end-of-utterance detection | 800 ms of silence (configurable) |
+| Control phrase match | 0.02 ms |
+| Needle tool routing | ~50–70 ms |
 | Whisper tiny, 3 s utterance | ~0.15–0.4 s |
-| Intent + tool routing (one call) | ~0.15–0.25 s |
-| Tool execution (local) | ~0.1 s |
-| First LLM token | ~0.2 s |
-| First audio out | ~0.25–0.5 s |
-| Full turn | ~0.45–0.8 s |
+| First LLM token | ~0.4 s |
+| First audio out | ~0.6 s |
+| Full text turn | ~0.45 s |
+| Full voice turn | ~0.8 s |
 
 ## Failure behaviour
 
 Everything degrades instead of crashing:
 
-* Decision model down → router returns `answer`, the LLM handles the turn.
+* Needle fails to load → no tools, normal conversation.
+* Needle returns low confidence → the tool is skipped, the LLM answers.
 * MCP server down → no tools, normal conversation.
-* Argument extraction fails → the tool is skipped, the LLM answers.
 * Summarisation fails → old turns are dropped, with a note saying so.
 * Ollama down → a readable `OllamaError`, never a traceback.
+
+## Why the numbers changed
+
+| Version | Router | RAM |
+|---|---|---|
+| Tev1 0.8B + 2B LLM @128k | 1211 MB | 3052 MB |
+| Needle 3 + 0.8B LLM @128k | ~45 MB | **1692 MB** |
+
+Routing got 27× cheaper in memory and roughly 3× faster, and control-phrase
+accuracy went from "abstains on the single most important word" to 100% on a
+22-case test set.

@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "hamishfromatech" }]
-keywords = ["voice-agent", "offline", "ollama", "whisper", "tts", "stt", "mcp", "local-ai"]
+keywords = ["voice-agent", "offline", "ollama", "whisper", "tts", "stt", "mcp", "needle", "local-ai"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
@@ -24,6 +24,7 @@ dependencies = [
     "httpx>=0.27",
     "psutil>=5.9",
     "fastmcp>=4.0",
+    "cactus-needle>=3.0",
 ]
 
 [project.optional-dependencies]

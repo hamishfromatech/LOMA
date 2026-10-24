@@ -40,8 +40,7 @@ loma transcribe path/to/recording.wav
 loma devices
 ```
 
-**Look at:** `src/loma/audio.py`, especially `UtteranceRecorder` and
-`dbfs`.
+**Look at:** `src/loma/audio.py`, especially `UtteranceRecorder` and `dbfs`.
 
 The VAD is an energy gate: RMS level in dBFS, compared to `LOMA_SILENCE_DB`
 (default −45). Two counters decide when an utterance starts and ends.
@@ -49,7 +48,7 @@ The VAD is an energy gate: RMS level in dBFS, compared to `LOMA_SILENCE_DB`
 **Exercise 1:** set `LOMA_SILENCE_DB=-30` and try listening. What changes? Why?
 
 **Exercise 2:** set `LOMA_SILENCE_MS=2000`. What happens to latency? What
-happens if you set it to `100`?
+happens at `100`?
 
 **Exercise 3:** the 300 ms preroll buffer exists so the first phoneme is not
 clipped. Set `preroll_ms=0` in `VadConfig` and transcribe the word "hello".
@@ -57,59 +56,83 @@ Compare.
 
 ---
 
-## Lab 3 — Watch it decide
+## Lab 3 — Why control words are not a model problem
 
 ```bash
-loma decide "stop talking please"
-loma decide "can you tell me a fun fact about the ocean"
-loma decide "say that again"
+loma route "stop talking please"
+loma route "can you just be quiet"
+loma route "thanks, that's all"
+loma route "what does reset mean"
 ```
 
-You get the full probability distribution, the confidence, and the latency.
+**Look at:** `src/loma/control.py`.
 
-**Look at:** `src/loma/decision.py`.
+No model runs here. The utterance is lowercased, stripped of punctuation,
+stripped of filler words ("can", "you", "just", "please"), and then exact-matched
+against four phrase sets.
 
-**Exercise 1:** why is `confidence` usually lower than the top probability?
-Read `_apply_confidence_floor` and `_runner_up`.
+**Exercise 1:** print `normalise()` for each phrase above. Which words
+disappeared, and why is that safe?
 
-**Exercise 2:** `loma decide "stop"` — what happens, and why? (Hint: the
-runner-up is `exit`, which is also a fast action.)
+**Exercise 2:** add a phrase to `PHRASES["stop"]` — try "pack it in" — and
+confirm it works without touching any other file.
 
-**Exercise 3:** raise `LOMA_DECISION_MIN_CONFIDENCE=0.95` and re-run. Which
-phrases now fall through to the LLM? Is that the trade-off you want?
+**Exercise 3:** break it deliberately. Remove `"what"` from `FILLERS` and check
+that "what does reset mean" still does not fire. Then remove `"reset"` from the
+stop set and see what happens.
 
-**Exercise 4:** add a new intent — say `"louder"` — and route it to a canned
-reply. You will need to edit `INTENT_CRITERIA` and `_fast_action`.
+**Exercise 4:** this table is the whole argument. Fill in the last column by
+running `git show HEAD~1:src/loma/decision.py` if you have the history, or by
+asking a local 0.8B model the same five phrases:
+
+| Phrase | Expected | Lexicon | A 0.8B model |
+|---|---|---|---|
+| "stop" | stop | ? | ? |
+| "forget everything" | reset | ? | ? |
+| "how are you" | answer | ? | ? |
+| "that's all" | exit | ? | ? |
+
+Which failure is worse: a missed command or a false one? That answer is why the
+lexicon falls through to `answer` instead of guessing.
 
 ---
 
-## Lab 4 — Give it a tool
+## Lab 4 — Give it a tool with Needle
 
 ```bash
 loma tools
-loma tools --probe "roll three twenty sided dice"
-loma tools --probe "what is the weather in Mackay"
+loma route "roll a d20"
+loma route "what is 17 times 24"
+loma route "how are you"
 ```
 
 **Look at:** `src/loma/tool_router.py` and `src/loma/mcp_hub.py`.
 
-The key design point: the **decision model** chooses a tool; the **language
-model** only extracts arguments for that one tool. Count the schemas in each
-prompt — that is the whole memory argument.
+Needle returns `function_calls` **and** a calibrated `confidence`. LOMA calls the
+tool only when the confidence clears `LOMA_TOOL_MIN_CONFIDENCE`; otherwise the
+language model answers normally.
 
-**Exercise 1:** why does `choose()` add a `none` option to the criteria?
+**Exercise 1:** run `loma route "how are you"` and `loma route "roll a d20"`.
+Compare the confidences. Why does a floor of 0.50 separate them, and why is that
+specific to this toolset?
 
-**Exercise 2:** open `examples/mcp_local_tools.py` and add a `coin_flip` tool.
-Restart and check `loma tools`. Does the router find it without any code
-changes? (It should — that is the point of MCP.)
+**Exercise 2:** lower the floor to 0.1:
+`LOMA_TOOL_MIN_CONFIDENCE=0.1 loma route "how are you"`. What does it call? Now
+set it to 0.95. Which useful calls disappear?
 
-**Exercise 3:** make argument extraction fail deliberately. Change `calculate`
-to require a parameter the model cannot infer from the sentence, and watch
-`ToolRouter.arguments` refuse to call it.
+**Exercise 3:** add a `coin_flip` tool to `examples/mcp_local_tools.py` with one
+optional parameter. Restart and check `loma tools`. Does Needle find it with no
+code changes? (It should — that is the point of MCP.)
 
-**Exercise 4:** add a second MCP server to `mcp.json`. FastMCP prefixes tool
-names with the server name when there is more than one. What changes in
-`loma tools`?
+**Exercise 4 — the important one:** add a `roll_dice` tool that takes
+`sides` **and** `count`, then run:
+
+```bash
+loma route "roll three twenty sided dice"
+```
+
+Look at the arguments. Now split it into two single-argument tools and try
+again. Read `docs/ARCHITECTURE.md#tool-design` and explain the difference.
 
 ---
 
@@ -138,9 +161,8 @@ summary keep it?
 **Exercise 3:** set `LOMA_COMPACT_KEEP_TURNS=6`. What happens to the summary
 size versus the retained conversation?
 
-**Exercise 4:** raise `LOMA_NUM_CTX=131072` (the default already) and watch
-`ollama ps` while you talk. Does the LLM's size grow with the window or with
-usage? Why does that matter for the RAM budget?
+**Exercise 4:** run `loma models` while you talk. Does the LLM's size grow with
+the *window* or with *usage*? Why does that matter for the RAM budget?
 
 ---
 
@@ -158,20 +180,23 @@ Try, in order:
 4. "Start over" — history cleared, no LLM call.
 5. "Goodbye" — ends the session.
 
-**Exercise:** in `pipeline.py`, add a `--verbose` print of the router's full
-probability distribution for every turn. What is the weakest link on your
-machine — the router, the LLM, or the TTS?
+**Exercise:** in `pipeline.py`, print the tool route's `confidence` for every
+turn. What is the weakest link on your machine — the router, the LLM, or the
+TTS?
 
 ---
 
 ## Design questions to argue about
 
-1. Why is the decision model a *separate* model instead of asking the LLM for
-   JSON?
-2. The pipeline is half-duplex: you cannot interrupt LOMA mid-sentence. What
+1. Why is a four-word lexicon better than a model here, and where would a
+   lexicon stop being enough? (Try adding "I changed my mind, stop" to
+   `PHRASES` and see how quickly it gets silly.)
+2. Needle is 35 MB and the LLM is 1.5 GB. What would it take to let Needle
+   answer the simple questions too?
+3. The pipeline is half-duplex: you cannot interrupt LOMA mid-sentence. What
    would barge-in require? (Hint: a second audio stream, and a way to cancel a
    generation that is already running.)
-3. `stop` currently ends the turn silently, because by the time we hear it
+4. `stop` currently ends the turn silently, because by the time we hear it
    nothing is playing. Is that the right behaviour for a half-duplex system?
-4. Compaction summarises with the same LLM. What could go wrong with a 0.8B
+5. Compaction summarises with the same LLM. What could go wrong with a 0.8B
    summariser, and how would you detect it?

@@ -6,10 +6,10 @@ Subcommands are chosen so a student can explore one stage at a time:
     loma devices             which microphone and speakers exist?
     loma context             context window policy and current usage
     loma tools               list MCP tools and test the tool router
-    loma decide "hello"      decision model only (~150 ms)
+    loma route "hello"       control lexicon + Needle tool routing
     loma transcribe x.wav    speech -> text only
     loma speak "hello"       text -> speech only
-    loma ask "hello"         text -> router -> tools -> LLM -> speech
+    loma ask "hello"         text -> route -> tools -> LLM -> speech
     loma listen              the whole loop
     loma bench               prove the RAM and latency numbers
 """
@@ -25,6 +25,7 @@ from pathlib import Path
 from loma import __version__
 from loma.config import Settings
 from loma.context import describe_policy
+from loma.control import ControlRouter
 from loma.memory import format_snapshot, peak_rss_mb, snapshot, wait_for_settle
 from loma.ollama_client import OllamaClient, OllamaError
 
@@ -45,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     handler = {
         "listen": cmd_listen,
         "ask": cmd_ask,
-        "decide": cmd_decide,
+        "route": cmd_route,
         "tools": cmd_tools,
         "context": cmd_context,
         "transcribe": cmd_transcribe,
@@ -81,19 +82,21 @@ def build_parser() -> argparse.ArgumentParser:
     listen.add_argument("--no-warmup", action="store_true", help="skip model preloading")
 
     # ask -------------------------------------------------------------
-    ask = sub.add_parser("ask", help="text prompt -> router -> tools -> LLM -> speech")
+    ask = sub.add_parser("ask", help="text prompt -> route -> tools -> LLM -> speech")
     ask.add_argument("prompt", nargs="+", help="what to ask")
     ask.add_argument("--no-speak", action="store_true", help="do not play audio")
     ask.add_argument("-o", "--out", type=Path, help="also save the spoken reply as WAV")
-    ask.add_argument("--no-route", action="store_true", help="bypass the decision router")
+    ask.add_argument("--no-route", action="store_true", help="bypass the control lexicon")
     ask.add_argument("--no-tools", action="store_true", help="disable MCP tools")
     ask.add_argument("--no-warmup", action="store_true")
 
-    # decide ----------------------------------------------------------
-    decide = sub.add_parser("decide", help="run the decision model on some text")
-    decide.add_argument("text", nargs="+")
-    decide.add_argument("--tools", action="store_true", help="also route to MCP tools")
-    decide.add_argument("--json", action="store_true")
+    # route -----------------------------------------------------------
+    route = sub.add_parser(
+        "route", aliases=["decide"], help="control lexicon + Needle tool routing, no LLM"
+    )
+    route.add_argument("text", nargs="+")
+    route.add_argument("--no-tools", action="store_true", help="skip MCP tool routing")
+    route.add_argument("--json", action="store_true")
 
     # tools -----------------------------------------------------------
     tools = sub.add_parser("tools", help="list MCP tools and test the router")
@@ -177,72 +180,79 @@ def cmd_ask(args, settings: Settings) -> int:
         except StopLoop:
             return 0
 
-    if args.no_speak or not result.reply:
-        print(result.summary())
-    else:
+    if not args.no_speak and result.reply:
         print()
-        print(result.summary())
+    print(result.summary())
     return 0
 
 
 # ---------------------------------------------------------------------------
-# decide / tools / context
+# route / tools / context
 # ---------------------------------------------------------------------------
 
 
-def cmd_decide(args, settings: Settings) -> int:
-    from loma.decision import DecisionEngine
+def _route_payload(text: str, settings: Settings, *, with_tools: bool) -> dict:
+    """Control match plus (optionally) a live Needle routing decision."""
     from loma.mcp_hub import MCPHub, load_mcp_config
-    from loma.tool_router import ToolRouter
+    from loma.tool_router import NeedleRouter
 
+    control = ControlRouter(settings.control_enabled).match(text)
+    payload: dict = {"control": control.as_dict()}
+
+    if not with_tools or not settings.mcp_enabled:
+        return payload
+
+    hub = MCPHub(load_mcp_config(settings.mcp_config), max_tools=settings.tool_max_tools)
+    router = NeedleRouter(settings)
+    try:
+        if hub.start() and router.load(hub.tools):
+            payload["tools"] = router.route(text).as_dict()
+        else:
+            payload["tools"] = {"error": hub.last_error or router.last_error}
+    finally:
+        router.close()
+        hub.stop()
+    return payload
+
+
+def cmd_route(args, settings: Settings) -> int:
     text = " ".join(args.text)
-    payload: dict = {}
-
-    with OllamaClient(settings) as client:
-        decision = DecisionEngine(client, settings).decide(text)
-        payload["intent"] = decision.as_dict()
-
-        if args.tools:
-            hub = MCPHub(
-                load_mcp_config(settings.mcp_config) if settings.mcp_enabled else None,
-                max_tools=settings.tool_max_tools,
-            )
-            try:
-                if hub.start():
-                    tool_decision = ToolRouter(client, settings).choose(text, hub.tools)
-                    payload["tool"] = tool_decision.as_dict()
-            finally:
-                hub.stop()
+    payload = _route_payload(text, settings, with_tools=not args.no_tools)
 
     if args.json:
         print(json.dumps(payload, indent=2))
         return 0
 
-    print(f"text        : {text}")
-    print(f"intent      : {decision.intent}")
-    print(f"probability : {decision.probability:.1%}")
-    print(f"confidence  : {decision.confidence:.1%}")
-    print(f"latency     : {decision.latency_s * 1000:.0f} ms")
-    if decision.fallback_reason:
-        print(f"fallback    : {decision.fallback_reason}")
-    print("probabilities:")
-    for name, probability in sorted(decision.probabilities.items(), key=lambda i: -i[1]):
-        print(f"  {name:<10} {probability:6.1%}  {'#' * int(probability * 40)}")
+    control = payload["control"]
+    print(f"text    : {text}")
+    print(f"control : {control['intent']}  ({control['latency_s'] * 1000:.2f} ms)")
+    if control["matched"]:
+        print(f"matched : {control['matched']!r}")
 
-    tool_info = payload.get("tool")
+    tool_info = payload.get("tools")
     if tool_info:
-        print("\ntool route  :")
-        print(f"  tool      : {tool_info['tool'] or 'none'}")
-        print(f"  confidence: {tool_info['confidence']:.1%}")
-        print(f"  latency   : {tool_info['latency_s'] * 1000:.0f} ms")
-        if tool_info.get("reason"):
-            print(f"  reason    : {tool_info['reason']}")
+        print()
+        if "error" in tool_info:
+            print(f"tools   : unavailable ({tool_info['error']})")
+        elif tool_info["tools"]:
+            calls = ", ".join(
+                f"{c['tool']}({c['arguments']})" for c in tool_info["tools"]
+            )
+            print(f"tools   : {calls}")
+            print(f"needle  : confidence {tool_info['confidence']:.2f} "
+                  f"in {tool_info['latency_s'] * 1000:.0f} ms")
+            if tool_info.get("reasoning"):
+                print(f"why     : {tool_info['reasoning']}")
+        else:
+            print(f"tools   : none  ({tool_info['reason']})")
+            print(f"needle  : confidence {tool_info['confidence']:.2f} "
+                  f"in {tool_info['latency_s'] * 1000:.0f} ms")
     return 0
 
 
 def cmd_tools(args, settings: Settings) -> int:
     from loma.mcp_hub import MCPHub, load_mcp_config
-    from loma.tool_router import ToolRouter
+    from loma.tool_router import NeedleRouter
 
     if not settings.mcp_config.exists():
         print(f"no MCP config at {settings.mcp_config}")
@@ -250,26 +260,33 @@ def cmd_tools(args, settings: Settings) -> int:
         return 1
 
     hub = MCPHub(load_mcp_config(settings.mcp_config), max_tools=settings.tool_max_tools)
+    router = NeedleRouter(settings)
     try:
         if not hub.start():
             print(f"MCP could not start: {hub.last_error or 'unknown error'}", file=sys.stderr)
             return 1
 
         if args.probe:
-            with OllamaClient(settings) as client:
-                decision = ToolRouter(client, settings).choose(args.probe, hub.tools)
+            if not router.load(hub.tools):
+                print(f"Needle could not start: {router.last_error}", file=sys.stderr)
+                return 1
+            route = router.route(args.probe)
             if args.json:
-                print(json.dumps({"tools": [t.name for t in hub.tools], "probe": decision.as_dict()}, indent=2))
+                print(json.dumps(route.as_dict(), indent=2))
+                return 0
+            print(f"probe   : {args.probe}")
+            if route.requests:
+                for request in route.requests:
+                    print(f"tool    : {request.tool.name}")
+                    print(f"args    : {request.arguments}")
             else:
-                print(f"probe: {args.probe}")
-                print(f"tool : {decision.tool.name if decision.tool else 'none'}")
-                print(f"conf : {decision.confidence:.1%}  ({decision.latency_s * 1000:.0f} ms)")
-                if decision.reason:
-                    print(f"note : {decision.reason}")
-                for name, probability in sorted(
-                    decision.probabilities.items(), key=lambda i: -i[1]
-                ):
-                    print(f"  {name:<24} {probability:6.1%}")
+                print(f"tool    : none  ({route.reason})")
+            print(f"needle  : confidence {route.confidence:.2f} "
+                  f"in {route.latency_s * 1000:.0f} ms")
+            if route.reasoning:
+                print(f"why     : {route.reasoning}")
+            if route.suppressed:
+                print(f"held    : {route.suppressed} call(s) below the confidence floor")
             return 0
 
         if args.json:
@@ -293,9 +310,10 @@ def cmd_tools(args, settings: Settings) -> int:
             print(f"\n  {tool.name}")
             print(f"    {tool.short_description}")
             print(f"    required: {required}")
-        print("\nRoute a sentence with: loma tools --probe \"what time is it\"")
+        print('\nRoute a sentence with: loma tools --probe "what time is it"')
         return 0
     finally:
+        router.close()
         hub.stop()
 
 
@@ -305,6 +323,7 @@ def cmd_context(args, settings: Settings) -> int:
         "policy": describe_policy(),
         "compact_enabled": settings.compact_enabled,
         "compact_at": settings.compact_at,
+        "compact_target_tokens": settings.compact_target_tokens,
         "compact_threshold_tokens": settings.compact_threshold_tokens,
         "compact_keep_turns": settings.compact_keep_turns,
         "history_turns": settings.history_turns,
@@ -315,13 +334,13 @@ def cmd_context(args, settings: Settings) -> int:
 
     print(describe_policy())
     print(f"context window   : {settings.num_ctx:,} tokens")
-    print(f"compaction at    : {settings.compact_at:.0%} "
-          f"({settings.compact_threshold_tokens:,} tokens)")
+    print(f"compaction at    : {min(settings.compact_at, settings.compact_target_tokens / settings.num_ctx):.0%} "
+          f"({settings.compact_threshold_tokens:,} live tokens)")
     print(f"keep verbatim    : last {settings.compact_keep_turns} exchange(s)")
     print(f"hard history cap : {settings.history_turns} exchanges")
     print()
-    print("A 128k window needs a quantised KV cache to stay affordable:")
-    print("  export OLLAMA_KV_CACHE_TYPE=q4_0   # then restart Ollama")
+    print("The 128k window is a ceiling, not a target: compaction keeps live")
+    print("context near the target, which is what keeps the KV cache small.")
     print("Verify the real footprint with: loma bench")
     return 0
 
@@ -368,6 +387,11 @@ def cmd_speak(args, settings: Settings) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _needle_cache_ready() -> bool:
+    cache = Path.home() / ".cache" / "cactus-needle"
+    return any(cache.rglob("needle3.cact"))
+
+
 def cmd_doctor(args, settings: Settings) -> int:
     import shutil
 
@@ -375,15 +399,12 @@ def cmd_doctor(args, settings: Settings) -> int:
 
     # Ollama reachable + models
     version = "unknown"
-    loaded_ctx = None
     try:
         with OllamaClient(settings, timeout=10) as client:
             version = client.health().get("version", "unknown")
             checks.append(("Ollama reachable", True, f"v{version} at {settings.ollama_host}"))
 
             required = [settings.llm_model, settings.tts_model]
-            if settings.decision_enabled:
-                required.append(settings.decision_model)
             missing = []
             for name in required:
                 present = client.has_model(name)
@@ -408,6 +429,18 @@ def cmd_doctor(args, settings: Settings) -> int:
     if stt_ok:
         cached = settings.whisper_dir / f"models--Systran--faster-whisper-{settings.stt_model}"
         checks.append(("whisper weights cached", cached.exists(), str(settings.whisper_dir)))
+
+    # Needle tool router
+    try:
+        import needle  # noqa: F401
+
+        checks.append(("Needle installed", True, "cactus-needle"))
+        checks.append(("Needle weights cached", _needle_cache_ready(), "~/.cache/cactus-needle"))
+    except ImportError:
+        checks.append(("Needle installed", False, "pip install cactus-needle"))
+
+    # Control lexicon (always available; this documents that no model is needed)
+    checks.append(("control lexicon", settings.control_enabled, "deterministic, 0 MB"))
 
     # audio
     try:
@@ -441,18 +474,7 @@ def cmd_doctor(args, settings: Settings) -> int:
 
     # context policy
     checks.append(
-        (
-            "context window",
-            settings.num_ctx >= 131_072,
-            f"{settings.num_ctx // 1024}k tokens",
-        )
-    )
-    checks.append(
-        (
-            "KV cache tip",
-            True,
-            "set OLLAMA_KV_CACHE_TYPE=q4_0 to make 128k fit (see docs/RAM_BUDGET.md)",
-        )
+        ("context window", settings.num_ctx >= 131_072, f"{settings.num_ctx // 1024}k tokens")
     )
 
     # optional tools
@@ -473,7 +495,6 @@ def cmd_doctor(args, settings: Settings) -> int:
             {
                 "ok": all(ok for _, ok, _ in checks),
                 "version": version,
-                "context": loaded_ctx,
                 "checks": [{"name": n, "ok": o, "detail": d} for n, o, d in checks],
             },
             indent=2,
@@ -528,23 +549,20 @@ def cmd_bench(args, settings: Settings) -> int:
         "What is two plus two? Answer briefly.",
     ]
     results = []
-    decision_times: list[float] = []
+    control_times: list[float] = []
     tool_times: list[float] = []
 
     with VoicePipeline(settings) as pipeline:
         pipeline.warm_up()
         wait_for_settle(1.0)
 
-        for _ in range(3):
-            decision = pipeline.decider.decide("what is the capital of France?")
-            decision_times.append(decision.latency_s)
+        controls = ControlRouter(settings.control_enabled)
+        for phrase in ("stop", "start over", "say that again", "goodbye"):
+            control_times.append(controls.match(phrase).latency_s)
 
-        if pipeline.hub.available and pipeline.hub.tools:
-            for _ in range(3):
-                choice = pipeline.tool_router.choose(
-                    "what time is it right now", pipeline.hub.tools
-                )
-                tool_times.append(choice.latency_s)
+        if pipeline.start_tools() and pipeline.hub.tools:
+            for phrase in ("what time is it", "roll two dice", "how are you"):
+                tool_times.append(pipeline.tool_router.route(phrase).latency_s)
 
         for index in range(args.turns):
             prompt = prompts[index % len(prompts)]
@@ -558,7 +576,7 @@ def cmd_bench(args, settings: Settings) -> int:
     peak = peak_rss_mb()
     avg_total = sum(r.total_s for r in results) / len(results) if results else 0.0
     avg_first = sum(r.first_token_s for r in results) / len(results) if results else 0.0
-    avg_decision = sum(decision_times) / len(decision_times) if decision_times else 0.0
+    avg_control = sum(control_times) / len(control_times) if control_times else 0.0
     avg_tool = sum(tool_times) / len(tool_times) if tool_times else 0.0
     ok = snap.total_mb <= settings.memory_budget_mb
 
@@ -568,7 +586,7 @@ def cmd_bench(args, settings: Settings) -> int:
                 "memory": snap.as_dict(),
                 "python_peak_rss_mb": round(peak, 1),
                 "num_ctx": settings.num_ctx,
-                "avg_decision_ms": round(avg_decision * 1000, 1),
+                "avg_control_us": round(avg_control * 1_000_000, 1),
                 "avg_tool_route_ms": round(avg_tool * 1000, 1),
                 "avg_total_s": round(avg_total, 3),
                 "avg_first_token_s": round(avg_first, 3),
@@ -582,9 +600,9 @@ def cmd_bench(args, settings: Settings) -> int:
         print(format_snapshot(snap, settings.memory_budget_mb))
         print(f"\nContext window  : {settings.num_ctx:,} tokens")
         print(f"Python peak RSS : {peak:.0f} MB")
-        print(f"Avg decision    : {avg_decision * 1000:.0f} ms")
+        print(f"Avg control     : {avg_control * 1_000_000:.0f} us")
         if avg_tool:
-            print(f"Avg tool route  : {avg_tool * 1000:.0f} ms")
+            print(f"Avg tool route  : {avg_tool * 1000:.0f} ms  (Needle)")
         print(f"Avg first token : {avg_first:.2f}s")
         print(f"Avg full turn   : {avg_total:.2f}s")
 

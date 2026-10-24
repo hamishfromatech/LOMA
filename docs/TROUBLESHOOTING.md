@@ -10,41 +10,34 @@ loma doctor --json | jq
 ## Ollama
 
 **`Cannot reach Ollama at http://localhost:11434`**
-Start it: `ollama serve`, or launch the desktop app. Check `curl
-http://localhost:11434/api/version`.
-
-**`model "loma-decision" not found`**
-`loma-decision` is built locally, not pulled:
-
-```bash
-./scripts/create_decision_model.sh
-```
+Start it: `ollama serve`, or launch the desktop app. Check
+`curl http://localhost:11434/api/version`.
 
 **400 "speech models only generate speech"**
 You pointed a chat request at `phonon`. The TTS model lives at
 `/v1/audio/speech`, not `/api/chat`.
 
 **400 unknown voice**
-`ollama show phonon` lists the voices. Voice names are case- and accent-insensitive.
+`ollama show phonon` lists the voices. Voice names are case- and
+accent-insensitive.
 
-**Speech requests fail with a 400 on `response_format`**
-Only `wav` and `pcm` are supported. Anything else — mp3, speed, instructions —
-is rejected rather than ignored.
+**Only `wav` and `pcm` are accepted for `response_format`**
+Anything else — mp3, speed, instructions — is rejected rather than ignored.
 
 ## Memory
 
 **`loma bench` says over budget**
-Work through [`RAM_BUDGET.md`](RAM_BUDGET.md) levers in order. The usual culprit
-is an un-quantised KV cache: `export OLLAMA_KV_CACHE_TYPE=q4_0` and restart
-Ollama.
+Expected total is ~1.7 GB. If you are far above that, check `loma models`: a
+leftover model from another project may still be resident. `ollama stop <name>`
+unloads it.
 
 **The machine swaps while listening**
-Lower `LOMA_COMPACT_TARGET_TOKENS` (try 4096), and make sure `OLLAMA_NUM_PARALLEL=1`
-(Ollama's default) so it does not allocate several KV slots.
+Lower `LOMA_COMPACT_TARGET_TOKENS` (try 4096). The LLM's KV cache grows with the
+context you actually use, not with `num_ctx`.
 
-**Two LLMs loaded at once**
-`LOMA_LLM_MODEL` and `LOMA_DECISION_MODEL` must be different models. If you set
-them to the same name, Ollama still loads two contexts.
+**The LLM grows during a long conversation**
+That is MLX allocating KV lazily. Compaction is what bounds it; check
+`loma context` to see the live-token ceiling you have set.
 
 ## Audio
 
@@ -65,12 +58,31 @@ Increase the preroll in `VadConfig` (default 300 ms), or lower
 **It answers before I finish**
 `LOMA_SILENCE_MS` is too short. 800 ms is the default; 1200 ms is calmer.
 
-**No audio comes out, but timings look right**
-`sd.play` uses the default output device. Check `loma devices` and set
-`LOMA_MIC_DEVICE`… note that this variable only selects the *input*; output uses
-the system default.
+## Control phrases
 
-## MCP
+**"Stop!" was ignored**
+Run `loma route "stop"` and look at the `matched` field. If it is empty, the
+phrase is not in `PHRASES` after normalisation. Add it to
+`src/loma/control.py` — check `normalise()` first, because filler words are
+removed.
+
+**"Stop the music" stops the assistant**
+It should not: `"stop music"` is not in the phrase set, so it falls through.
+If you added a broad entry like `"stop"` to a word-matching scheme, that is the
+bug. Exact match is deliberate.
+
+**A command works in the CLI but not by voice**
+Whisper may be transcribing a homophone or dropping a word. Print the transcript
+(`loma listen -v`) and add that exact phrasing to `PHRASES`.
+
+## MCP and Needle
+
+**`Needle installed` fails**
+```bash
+pip install cactus-needle
+```
+The engine and 35 MB of weights download on first use; `./scripts/setup.sh` does
+that for you.
 
 **`MCP could not start: ...`**
 Run the server by hand to see the real error:
@@ -79,22 +91,29 @@ Run the server by hand to see the real error:
 .venv/bin/python examples/mcp_local_tools.py
 ```
 
-**`4 tools` but the router never picks one**
-Run `loma tools --probe "<your sentence>"` and look at the probabilities. If
-`none` wins, the tool descriptions are too vague — the decision model only sees
-the one-line description, not the schema.
+**Needle never picks a tool**
+Run `loma tools --probe "<your sentence>"` and read the confidence. Then check
+the two things that matter most:
+
+1. Does the tool description name the words the user actually says?
+2. Does every parameter have a description? FastMCP only emits one when the
+   docstring has an `Args:` section.
+
+**Needle picks the wrong tool**
+Add a trigger to the description, or split one vague tool into two precise ones.
+"One tool per action" is the rule that matters.
+
+**Arguments come back swapped or missing**
+Two numeric parameters on one tool is the classic failure. Split it: a
+`roll_die(sides)` is reliable where a `roll_dice(sides, count)` is not.
 
 **Tools are missing**
 LOMA shows at most `LOMA_TOOL_MAX_TOOLS` (40) to the router. `loma tools` lists
-all of them, but `loma tools --probe` only routes among the first 40.
+all of them, but `--probe` only routes among the first 40.
 
 **Tool names changed**
 With more than one server, FastMCP prefixes names: `server_tool`. With one
 server, names are bare. Do not hard-code either — read `loma tools`.
-
-**Argument extraction keeps failing**
-The 0.8B model cannot always infer numbers from speech. Give it a clearer
-utterance, or make the parameter optional with a default in the tool signature.
 
 ## Transcription quality
 
@@ -126,7 +145,7 @@ expires — `ollama stop <model>` to force a reload.
 ## Tests
 
 ```bash
-make test     # 92 tests, no network, no models
+make test     # no network, no models
 make lint
 ```
 

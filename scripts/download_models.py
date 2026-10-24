@@ -16,6 +16,30 @@ from loma.config import Settings  # noqa: E402
 from loma.stt import Transcriber  # noqa: E402
 
 
+def preload_needle() -> None:
+    """Fetch Needle's engine and 35 MB of weights so the first turn is offline."""
+    try:
+        import needle
+    except ImportError:
+        print("cactus-needle is not installed; skipping the tool router")
+        return
+
+    @needle.tool
+    def loma_warmup(value: int = 0):
+        """Warm-up tool. Does nothing.
+
+        Args:
+            value: ignored
+        """
+        return {"value": value}
+
+    print("downloading Needle 3 (engine + weights) ...")
+    needle.Needle(tools=[loma_warmup])
+    cache = Path.home() / ".cache" / "cactus-needle"
+    size_mb = sum(f.stat().st_size for f in cache.rglob("*") if f.is_file())
+    print(f"cached at {cache} ({size_mb / 1_000_000:.0f} MB)")
+
+
 def main() -> int:
     settings = Settings.from_env()
     settings.whisper_dir.mkdir(parents=True, exist_ok=True)
@@ -26,6 +50,8 @@ def main() -> int:
 
     size_mb = sum(f.stat().st_size for f in settings.whisper_dir.rglob("*") if f.is_file())
     print(f"cached at {settings.whisper_dir} ({size_mb / 1_000_000:.0f} MB)")
+
+    preload_needle()
     return 0
 
 

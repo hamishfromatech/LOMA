@@ -2,24 +2,28 @@
 
 One turn is:
 
-    microphone -> VAD -> faster-whisper -> decision router
+    microphone -> VAD -> faster-whisper -> control lexicon
                                           |-> fast action (no LLM)
-                                          |-> MCP tool -> LLM answer
-                                          `-> LLM answer
-    -> Phonon TTS -> speakers
+                                          `-> Needle 3 -> MCP tools
+                                                          `-> LLM -> Phonon -> speakers
 
-Three ideas make this cheap enough to run on a laptop:
+Four ideas keep this small and fast enough for a laptop:
 
-1. **A cheap gate.** A 0.8B System One model answers "what does the speaker
-   want?" in ~150 ms, so control phrases never touch the language model.
-2. **Tool schemas stay out of the prompt.** The same gate picks the tool; only
-   that one tool's schema is used, and only to extract arguments.
-3. **Overlapped speech.** Sentences go to a background speaker thread as soon
-   as the LLM finishes them, so audio starts while the model is still writing.
+1. **Control phrases are deterministic.** "Stop", "start over", "say that
+   again", "goodbye" are matched by a lexicon, not a model. Zero RAM, zero
+   latency, no misreads.
+2. **Tools are chosen by Needle 3**, a 35 MB model that returns a call with the
+   arguments already filled in. No tool schemas reach the LLM, and there is no
+   second generation pass to extract arguments.
+3. **Sentences are spoken while the model is still writing**, on a background
+   thread.
+4. **Compaction caps live context**, so a 128k window does not turn into a 3 GB
+   KV cache.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import Callable, Iterator
@@ -32,12 +36,12 @@ from loma.agent import Agent, Compaction
 from loma.audio import Microphone, Speaker, UtteranceRecorder, VadConfig, write_wav
 from loma.chunking import SentenceChunker
 from loma.config import Settings
-from loma.decision import Decision, DecisionEngine
-from loma.mcp_hub import MCPHub, ToolCall, load_mcp_config
+from loma.control import ControlMatch, ControlRouter
+from loma.mcp_hub import MCPHub, ToolBatch, ToolCall, load_mcp_config
 from loma.memory import MemoryGuard
 from loma.ollama_client import OllamaClient
 from loma.stt import Transcriber, Transcript
-from loma.tool_router import ToolDecision, ToolRouter
+from loma.tool_router import NeedleRouter, ToolRoute
 
 log = logging.getLogger(__name__)
 
@@ -61,8 +65,9 @@ class TurnResult:
     tool: str = ""
     tool_args: dict = field(default_factory=dict)
     tool_result: str = ""
+    tool_confidence: float = 0.0
     stt_s: float = 0.0
-    decision_s: float = 0.0
+    route_s: float = 0.0
     tool_s: float = 0.0
     first_token_s: float = 0.0
     first_audio_s: float = 0.0
@@ -71,15 +76,18 @@ class TurnResult:
 
     def summary(self) -> str:
         lines = [f"  you   : {self.transcript}"]
-        route = f"  route : {self.intent}"
+
         if self.intent != "answer":
-            route += f"  ({self.decision_s * 1000:.0f} ms, no LLM)"
+            lines.append(f"  route : {self.intent}  (lexicon, {self.route_s * 1000:.1f} ms)")
         else:
-            route += f"  (router {self.decision_s * 1000:.0f} ms)"
-        lines.append(route)
+            lines.append(f"  route : answer  (control {self.route_s * 1000:.1f} ms)")
+
         if self.tool:
             arg_text = ", ".join(f"{k}={v!r}" for k, v in self.tool_args.items()) or "-"
-            lines.append(f"  tool  : {self.tool}({arg_text}) in {self.tool_s * 1000:.0f} ms")
+            lines.append(
+                f"  tools : {self.tool}({arg_text}) "
+                f"in {self.tool_s * 1000:.0f} ms  [needle {self.tool_confidence:.2f}]"
+            )
             lines.append(f"          -> {self.tool_result[:120]}")
         if self.reply:
             lines.append(f"  loma  : {self.reply}")
@@ -103,17 +111,18 @@ class VoicePipeline:
         self.client = OllamaClient(self.settings)
         self.agent = Agent(self.client, self.settings)
         self.transcriber = Transcriber(self.settings)
-        self.decider = DecisionEngine(self.client, self.settings)
-        self.tool_router = ToolRouter(self.client, self.settings)
+        self.controls = ControlRouter(self.settings.control_enabled)
+        self.tool_router = NeedleRouter(self.settings)
 
         config = load_mcp_config(self.settings.mcp_config) if self.settings.mcp_enabled else None
         self.hub = MCPHub(config, max_tools=self.settings.tool_max_tools)
         self._tools_ready = False
-        self.last_tool_decision: ToolDecision | None = None
+        self.last_tool_route: ToolRoute | None = None
         self.last_reply = ""
 
     # -- lifecycle -----------------------------------------------------
     def close(self) -> None:
+        self.tool_router.close()
         self.hub.stop()
         self.client.close()
 
@@ -124,22 +133,23 @@ class VoicePipeline:
         self.close()
 
     def start_tools(self) -> bool:
-        """Connect to the configured MCP servers once."""
+        """Connect to MCP and build the Needle router once."""
         if self._tools_ready:
-            return self.hub.available
+            return self.hub.available and self.tool_router.ready
         self._tools_ready = True
         if not self.hub.configured:
             log.debug("no mcp.json configured; running without tools")
             return False
-        return self.hub.start()
+        if not self.hub.start():
+            return False
+        return self.tool_router.load(self.hub.tools)
 
     def warm_up(self, *, speech: bool = True) -> None:
         """Load every model, and connect to MCP, before the user speaks."""
         if self.hub.configured:
             log.info("connecting to MCP servers from %s", self.settings.mcp_config)
             self.start_tools()
-        log.info("warming up decision model (%s)", self.settings.decision_model)
-        self.decider.warm_up()
+        log.info("routing: control lexicon + Needle 3 (no decision model)")
         log.info(
             "warming up language model (%s, %d token window)",
             self.settings.llm_model,
@@ -167,17 +177,17 @@ class VoicePipeline:
         route: bool = True,
         use_tools: bool = True,
     ) -> TurnResult:
-        """Route, maybe call a tool, and answer one text turn."""
+        """Route, maybe call tools, and answer one text turn."""
         started = time.perf_counter()
-        decision = self.decider.decide(user_text) if route else Decision()
+        control = self.controls.match(user_text) if route else ControlMatch()
 
-        fast = self._fast_action(decision, speak=speak, save_wav=save_wav)
+        fast = self._fast_action(control, speak=speak, save_wav=save_wav)
         if fast is not None:
             fast.transcript = user_text
             fast.total_s = time.perf_counter() - started
             return fast
 
-        tool_call = self._maybe_call_tool(user_text) if use_tools else None
+        batch = self._maybe_call_tools(user_text) if use_tools else None
 
         result = self.reply(
             user_text,
@@ -185,12 +195,11 @@ class VoicePipeline:
             save_wav=save_wav,
             on_delta=on_delta,
             on_sentence=on_sentence,
-            think=decision.needs_reasoning,
-            tool_call=tool_call,
+            tool_batch=batch,
         )
         result.transcript = user_text
-        result.intent = decision.intent
-        result.decision_s = decision.latency_s
+        result.intent = control.intent
+        result.route_s = control.latency_s
         result.total_s = time.perf_counter() - started
         return result
 
@@ -203,7 +212,7 @@ class VoicePipeline:
         on_sentence: Callable[[str], None] | None = None,
         save_wav: Path | None = None,
         think: bool = False,
-        tool_call: ToolCall | None = None,
+        tool_batch: ToolBatch | None = None,
     ) -> TurnResult:
         """Run one LLM turn, optionally speaking it aloud."""
         started = time.perf_counter()
@@ -216,7 +225,7 @@ class VoicePipeline:
         first_token = 0.0
         first_audio = 0.0
 
-        extra_context = tool_call.as_prompt() if tool_call else None
+        extra_context = tool_batch.as_prompt() if tool_batch else None
 
         try:
             for delta in self.agent.respond(user_text, think=think, extra_context=extra_context):
@@ -259,11 +268,13 @@ class VoicePipeline:
             total_s=time.perf_counter() - started,
             compaction=self.agent.last_compaction,
         )
-        if tool_call:
-            result.tool = tool_call.tool.name
-            result.tool_args = tool_call.arguments
-            result.tool_result = tool_call.result
-            result.tool_s = tool_call.latency_s
+        if tool_batch and tool_batch.calls:
+            result.tool = ", ".join(tool_batch.names)
+            result.tool_args = tool_batch.calls[0].arguments
+            result.tool_result = " | ".join(call.result for call in tool_batch.calls)
+            result.tool_s = tool_batch.latency_s
+            route = self.last_tool_route
+            result.tool_confidence = route.confidence if route else 0.0
         return result
 
     def say(
@@ -356,33 +367,33 @@ class VoicePipeline:
 
     # -- fast actions --------------------------------------------------
     def _fast_action(
-        self, decision: Decision, *, speak: bool, save_wav: Path | None
+        self, control: ControlMatch, *, speak: bool, save_wav: Path | None
     ) -> TurnResult | None:
         """Handle control intents without the language model."""
-        if not decision.is_fast_action:
+        if not control.is_fast_action:
             return None
 
-        intent = decision.intent
-        log.debug("fast action: %s (%.0f ms)", intent, decision.latency_s * 1000)
+        intent = control.intent
+        log.debug("control: %s (matched %r)", intent, control.matched)
 
         if intent == "stop":
             # Half-duplex loop: by the time we hear "stop" nothing is playing.
             # The honest action is to end the turn silently.
-            return TurnResult(intent=intent, decision_s=decision.latency_s)
+            return TurnResult(intent=intent, route_s=control.latency_s)
 
         if intent == "reset":
             self.agent.reset()
             self.last_reply = ""
             result = self.say(FAST_REPLIES["reset"], speak=speak, save_wav=save_wav)
             result.intent = intent
-            result.decision_s = decision.latency_s
+            result.route_s = control.latency_s
             return result
 
         if intent == "repeat":
             text = self.last_reply or FAST_REPLIES["repeat_empty"]
             result = self.say(text, speak=speak, save_wav=save_wav)
             result.intent = intent
-            result.decision_s = decision.latency_s
+            result.route_s = control.latency_s
             return result
 
         if intent == "exit":
@@ -392,35 +403,40 @@ class VoicePipeline:
         return None
 
     # -- tools ---------------------------------------------------------
-    def _maybe_call_tool(self, user_text: str) -> ToolCall | None:
-        """Let the router pick a tool; run it if the choice is confident."""
+    def _maybe_call_tools(self, user_text: str) -> ToolBatch | None:
+        """Let Needle pick tools and fill arguments; execute them if confident."""
         if not self.settings.mcp_enabled:
             return None
-        if not self.start_tools() or not self.hub.tools:
+        if not self.start_tools():
             return None
 
-        decision = self.tool_router.choose(user_text, self.hub.tools)
-        self.last_tool_decision = decision
-        if decision.tool is None:
-            log.debug("no tool: %s", decision.reason)
+        route = self.tool_router.route(user_text)
+        self.last_tool_route = route
+        if not route.has_calls:
+            log.debug("no tool: %s", route.reason)
             return None
 
-        arguments = self.tool_router.arguments(decision.tool, user_text)
-        if arguments is None:
-            log.info("could not extract arguments for %s; answering without it", decision.tool.name)
-            return None
-
-        started = time.perf_counter()
-        text = self.hub.call(decision.tool.name, arguments)
-        latency = time.perf_counter() - started
-        log.info("tool %s(%s) -> %s", decision.tool.name, arguments, text[:120])
-        return ToolCall(
-            tool=decision.tool,
-            arguments=arguments,
-            result=text,
-            latency_s=latency,
-            error=text.startswith("error:"),
-        )
+        calls: list[ToolCall] = []
+        for request in route.requests:
+            started = time.perf_counter()
+            result = self.hub.call(request.tool.name, request.arguments)
+            latency = time.perf_counter() - started
+            log.info(
+                "tool %s(%s) -> %s",
+                request.tool.name,
+                json.dumps(request.arguments, ensure_ascii=False),
+                result[:120],
+            )
+            calls.append(
+                ToolCall(
+                    tool=request.tool,
+                    arguments=request.arguments,
+                    result=result,
+                    latency_s=latency,
+                    error=result.startswith("error:"),
+                )
+            )
+        return ToolBatch(calls=calls) if calls else None
 
     # -- helpers -------------------------------------------------------
     def _tts_stream(

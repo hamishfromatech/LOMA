@@ -59,22 +59,18 @@ class Settings:
     # Keep the models resident so a turn never pays a cold-load penalty.
     keep_alive: str = "30m"
 
-    # Decision model — a System One model used as a ~150 ms router.
-    # `loma-decision` is Tev1 0.8B q8_0 with a 1024-token context, built by
-    # scripts/create_decision_model.sh. The published tag is tev1:0.8b-q8_0,
-    # which defaults to 8192 tokens and costs ~100 MB more for no benefit.
-    decision_model: str = "loma-decision"
-    decision_enabled: bool = True
-    # Below this probability the router abstains and the LLM answers instead.
-    decision_min_confidence: float = 0.55
-    # Router decides whether a turn deserves the LLM's thinking step.
-    adaptive_thinking: bool = False
+    # Control phrases (stop / reset / repeat / exit) are matched by a tiny
+    # deterministic lexicon — zero RAM, zero latency, no misreads.
+    control_enabled: bool = True
 
-    # MCP tools — selected by the router so their schemas never reach the LLM
-    # wholesale. Only the chosen tool's schema is used, and only for argument
-    # extraction.
+    # MCP tools — Needle 3 (35 MB) picks the tool and fills the arguments, so
+    # no tool schema and no second LLM pass is needed to reach one.
     mcp_enabled: bool = True
     mcp_config: Path = _PROJECT_ROOT / "mcp.json"
+    # Below this confidence Needle's call is ignored and the LLM answers.
+    # This is per-toolset: measure your own true/false positives with
+    # `loma tools --probe` and move it. 0.50 separates them well on the demo
+    # tools; a missed tool is cheap, a wrong tool is not.
     tool_min_confidence: float = 0.50
     tool_max_tools: int = 40
 
@@ -173,10 +169,7 @@ class Settings:
             tts_model=_env("LOMA_TTS_MODEL", "phonon"),
             tts_voice=_env("LOMA_TTS_VOICE", "default"),
             keep_alive=_env("LOMA_KEEP_ALIVE", "30m"),
-            decision_model=_env("LOMA_DECISION_MODEL", "loma-decision"),
-            decision_enabled=_env("LOMA_DECISION_ENABLED", True),
-            decision_min_confidence=_env("LOMA_DECISION_MIN_CONFIDENCE", 0.55),
-            adaptive_thinking=_env("LOMA_ADAPTIVE_THINKING", False),
+            control_enabled=_env("LOMA_CONTROL_ENABLED", True),
             mcp_enabled=_env("LOMA_MCP_ENABLED", True),
             mcp_config=mcp_config,
             tool_min_confidence=_env("LOMA_TOOL_MIN_CONFIDENCE", 0.50),

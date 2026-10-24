@@ -7,8 +7,8 @@ A voice agent that runs entirely on your own machine, under 3 GB of RAM.
     ollama_client.py one HTTP client for the LLM, the TTS model and the router
     stt.py           faster-whisper speech-to-text
     audio.py         microphone capture, VAD, speaker playback
-    decision.py      System One intent router (fast actions)
-    tool_router.py   System One tool selection + argument extraction
+    control.py       deterministic stop/reset/repeat/exit lexicon
+    tool_router.py   Needle 3 tool selection + argument filling
     mcp_hub.py       FastMCP client bridge (sync API over async clients)
     agent.py         conversation state and auto-compaction
     pipeline.py      the end-to-end loop

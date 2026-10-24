@@ -1,7 +1,7 @@
 """A tiny, fully offline MCP server that ships with LOMA.
 
-It exists so students can watch the decision model route a spoken request to
-a real tool without signing up for anything or opening a port:
+It exists so students can watch the tool router turn a spoken request into
+a real call without signing up for anything or opening a port:
 
     .venv/bin/python examples/mcp_local_tools.py
 
@@ -30,9 +30,13 @@ mcp = FastMCP(
 
 @mcp.tool
 def get_current_time(utc_offset_hours: int = 0) -> str:
-    """Get the current time and date. Use for questions like what time is it, or what is today.
+    """Get the current time and date.
 
-    Optionally pass a UTC offset in hours.
+    Use for questions like "what time is it", "what is today's date", or
+    "what day is it".
+
+    Args:
+        utc_offset_hours: offset from UTC in hours; leave at 0 for local time
     """
     now = datetime.now(timezone.utc).astimezone()
     if utc_offset_hours:
@@ -43,12 +47,19 @@ def get_current_time(utc_offset_hours: int = 0) -> str:
 
 
 @mcp.tool
-def roll_dice(sides: int = 6, count: int = 1) -> dict:
-    """Roll `count` dice with `sides` sides each and return the rolls and total."""
+def roll_die(sides: int = 6) -> dict:
+    """Roll a single die and return the result.
+
+    Use when the user asks to roll a die, roll dice, roll a d20, or roll a
+    twenty-sided die. For several dice, call it once per die.
+
+    Args:
+        sides: how many sides the die has (a d20 or twenty-sided die is 20,
+            an ordinary die is 6)
+    """
     sides = max(2, min(1000, int(sides)))
-    count = max(1, min(100, int(count)))
-    rolls = [random.randint(1, sides) for _ in range(count)]
-    return {"rolls": rolls, "total": sum(rolls), "sides": sides}
+    value = random.randint(1, sides)
+    return {"roll": value, "sides": sides}
 
 
 _OPS = {
@@ -78,7 +89,15 @@ def _evaluate(node: ast.AST) -> float:
 
 @mcp.tool
 def calculate(expression: str) -> dict:
-    """Evaluate a basic arithmetic expression, e.g. '17 * 24 + 3'."""
+    """Evaluate an arithmetic expression.
+
+    Use for any arithmetic the user asks for, such as "17 times 24" or
+    "what is 12 percent of 80".
+
+    Args:
+        expression: the arithmetic to evaluate, written in numbers and
+            operators, for example "17 * 24" or "0.12 * 80"
+    """
     tree = ast.parse(expression, mode="eval")
     value = _evaluate(tree)
     # Speak-friendly: 408, not 408.0
@@ -88,7 +107,10 @@ def calculate(expression: str) -> dict:
 
 @mcp.tool
 def system_stats() -> dict:
-    """Report CPU count, memory in use, and the operating system."""
+    """Report CPU count, memory in use, and the operating system.
+
+    Use when the user asks about the computer's CPU, memory, RAM, or OS.
+    """
     import psutil
 
     memory = psutil.virtual_memory()

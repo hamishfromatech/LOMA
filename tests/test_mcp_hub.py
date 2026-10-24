@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from loma.mcp_hub import MCPHub, MCPTool, ToolCall, _result_text, load_mcp_config
+from loma.mcp_hub import MCPHub, MCPTool, ToolBatch, ToolCall, _result_text, load_mcp_config
 
 
 def make_tool(**overrides) -> MCPTool:
@@ -134,3 +134,45 @@ def test_hub_stop_is_idempotent():
 def test_find_returns_none_for_an_empty_hub(name):
     hub = MCPHub(None)
     assert hub.find(name) is None
+
+
+# ---------------------------------------------------------------------------
+# ToolBatch
+# ---------------------------------------------------------------------------
+
+
+def call(name="roll_dice", result='{"rolls":[3,5]}', error=False):
+    return ToolCall(
+        tool=make_tool(name=name), arguments={"count": 2}, result=result, error=error
+    )
+
+
+def test_batch_prompt_covers_every_call():
+    batch = ToolBatch(calls=[call(), call("get_time", result="22:31")])
+    prompt = batch.as_prompt()
+    assert "roll_dice" in prompt
+    assert "get_time" in prompt
+    assert "do not call a tool again" in prompt.lower()
+    assert batch.names == ["roll_dice", "get_time"]
+
+
+def test_empty_batch_has_no_prompt():
+    assert ToolBatch().as_prompt() == ""
+
+
+def test_batch_reports_failure():
+    batch = ToolBatch(calls=[call(error=True, result="error: nope")])
+    assert batch.failed
+    assert "failed" in batch.as_prompt().lower()
+
+
+def test_batch_latency_is_the_sum():
+    a, b = call(), call("get_time")
+    a.latency_s, b.latency_s = 0.1, 0.2
+    assert ToolBatch(calls=[a, b]).latency_s == pytest.approx(0.3)
+
+
+def test_batch_serialises_for_the_cli():
+    data = ToolBatch(calls=[call()]).as_dict()
+    assert data["calls"][0]["tool"] == "roll_dice"
+    assert data["calls"][0]["arguments"] == {"count": 2}

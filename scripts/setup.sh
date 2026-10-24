@@ -3,9 +3,9 @@
 #
 #   ./scripts/setup.sh
 #
-# Creates .venv, installs LOMA, pulls the three Ollama models, builds the
-# tuned decision model, and caches the faster-whisper weights inside ./models
-# so later runs need no network.
+# Creates .venv, installs LOMA, pulls the Ollama models, and caches
+# faster-whisper's weights and Needle's engine inside local caches so later
+# runs need no network.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -13,8 +13,6 @@ cd "$(dirname "$0")/.."
 PYTHON="${PYTHON:-python3}"
 LLM_MODEL="${LOMA_LLM_MODEL:-qwen3.5:0.8b}"
 TTS_MODEL="${LOMA_TTS_MODEL:-phonon}"
-DECISION_SOURCE="tev1:0.8b-q8_0"
-DECISION_MODEL="${LOMA_DECISION_MODEL:-loma-decision}"
 
 echo "==> Checking prerequisites"
 command -v "$PYTHON" >/dev/null || { echo "error: $PYTHON not found"; exit 1; }
@@ -32,17 +30,13 @@ echo "==> Creating virtual environment (.venv)"
 
 echo
 echo "==> Pulling Ollama models"
-for model in "$LLM_MODEL" "$TTS_MODEL" "$DECISION_SOURCE"; do
+for model in "$LLM_MODEL" "$TTS_MODEL"; do
   echo "  - $model"
   ollama pull "$model"
 done
 
 echo
-echo "==> Building the tuned decision model ($DECISION_MODEL)"
-./scripts/create_decision_model.sh "$DECISION_SOURCE" "$DECISION_MODEL"
-
-echo
-echo "==> Caching faster-whisper '${LOMA_STT_MODEL:-tiny}' in ./models/whisper"
+echo "==> Caching faster-whisper and the Needle tool router"
 .venv/bin/python scripts/download_models.py
 
 echo
@@ -62,9 +56,12 @@ Activate the venv first if you prefer `loma` on your PATH:
 
   source .venv/bin/activate
 
-Optional but recommended on a memory-tight machine: quantise Ollama's KV
-cache before starting the server. It is the difference between a 128k window
-costing 2.8 GB and 1.7 GB with llama.cpp models:
+LOMA needs no decision model: control phrases are matched by a lexicon and
+tool calls come from Needle 3, a 35 MB model. The whole stack measures about
+1.7 GB with a 128k window.
+
+If you also run llama.cpp models that scale their KV cache with context, you
+can halve that cost with:
 
   export OLLAMA_KV_CACHE_TYPE=q4_0
 EOF
