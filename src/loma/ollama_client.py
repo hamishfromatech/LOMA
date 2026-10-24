@@ -24,6 +24,9 @@ from loma.config import Settings
 # TTS requests are capped by the server at 4096 characters.
 MAX_SPEECH_CHARS = 4000
 
+#: Extra completion budget granted when thinking is requested.
+THINKING_ALLOWANCE = 768
+
 
 def human_parameters(raw: str) -> str:
     """Ollama reports ``parameter_size`` as "0.8B" on local models but as a raw
@@ -143,6 +146,7 @@ class OllamaClient:
                     model["capabilities"] = model["capabilities"] or info["capabilities"]
                     model["parameters"] = model["parameters"] or info["parameters"]
                     model["family"] = model["family"] or info["family"]
+                    model["thinking"] = model.get("thinking") or info["thinking"]
         return sorted(models, key=lambda item: item["size_mb"])
 
     def _models_from_tags(self) -> list[dict[str, Any]]:
@@ -164,6 +168,7 @@ class OllamaClient:
                     "modified_at": model.get("modified_at", ""),
                     # Ollama 0.40.10+ includes this; older builds do not.
                     "capabilities": list(model.get("capabilities") or []),
+                    "thinking": model.get("thinking"),
                     "source": "api/tags",
                 }
             )
@@ -186,6 +191,7 @@ class OllamaClient:
                     "quantization": "",
                     "modified_at": str(model.get("created", "")),
                     "capabilities": [],
+                    "thinking": None,
                     "source": "v1/models",
                 }
             )
@@ -202,7 +208,7 @@ class OllamaClient:
         if cached is not None:
             return cached
 
-        empty = {"capabilities": [], "parameters": "", "family": "", "voices": []}
+        empty = {"capabilities": [], "parameters": "", "family": "", "voices": [], "thinking": None}
         try:
             response = self._http.post("/api/show", json={"model": model}, timeout=10)
         except httpx.HTTPError:
@@ -223,6 +229,13 @@ class OllamaClient:
             "parameters": parameters,
             "family": details.get("family", "") or details.get("families", "") or "",
             "voices": _voices_from_payload(payload),
+            # ``thinking`` is Ollama's per-model control block:
+            #   {"values": [false, true], "default": true}
+            #   {"values": ["low", "high", "max"], "default": "max"}
+            # ``values: [false]`` means the model cannot think; a missing block
+            # means it may still think on its own, which is why the marker guard
+            # in loma.text exists.
+            "thinking": payload.get("thinking"),
         }
         self._detail_cache[model] = found
         return found
@@ -299,9 +312,10 @@ class OllamaClient:
         self,
         messages: list[dict[str, str]],
         *,
-        think: bool = False,
+        think: bool | str = False,
         max_tokens: int | None = None,
         on_usage: Callable[[dict[str, int]], None] | None = None,
+        on_thinking: Callable[[str], None] | None = None,
     ) -> Iterator[str]:
         """Yield assistant text fragments as the model produces them.
 
@@ -320,7 +334,10 @@ class OllamaClient:
             "keep_alive": self.settings.keep_alive,
             "options": {
                 "num_ctx": self.settings.num_ctx,
-                "num_predict": max_tokens or self.settings.max_tokens,
+                # Thinking tokens are billed against the same budget, so asking
+                # for reasoning has to buy room for it or the answer truncates.
+                "num_predict": (max_tokens or self.settings.max_tokens)
+                + (THINKING_ALLOWANCE if think else 0),
                 "temperature": self.settings.temperature,
             },
         }
@@ -333,6 +350,11 @@ class OllamaClient:
                 if error := chunk.get("error"):
                     raise OllamaError(str(error))
                 message = chunk.get("message") or {}
+                # Reasoning and answer are separate fields. Thinking is never
+                # yielded as content: LOMA speaks content sentence by sentence.
+                reasoning = message.get("thinking")
+                if reasoning and on_thinking is not None:
+                    on_thinking(reasoning)
                 content = message.get("content")
                 if content:
                     yield content
@@ -342,6 +364,11 @@ class OllamaClient:
                             {
                                 "prompt_tokens": int(chunk.get("prompt_eval_count") or 0),
                                 "completion_tokens": int(chunk.get("eval_count") or 0),
+                                # "length" means generation stopped at the token
+                                # budget, not at the end of a sentence. Without
+                                # this an over-budget turn looks like a model that
+                                # simply had nothing to say.
+                                "done_reason": str(chunk.get("done_reason") or ""),
                             }
                         )
                     break

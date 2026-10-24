@@ -25,6 +25,8 @@ export type ChatMessage = {
   intent?: string
   matched?: string
   metrics?: TurnMetrics
+  /** The model stopped at its token budget, not at the end of a sentence. */
+  truncated?: boolean
   streaming?: boolean
   error?: string
   memory?: string
@@ -86,6 +88,7 @@ export type StreamEvent =
         total_s: number
       }
       context_tokens: number
+      truncated?: boolean
       compaction: {
         messages_removed: number
         tokens_before: number

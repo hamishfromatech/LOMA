@@ -220,3 +220,29 @@ class TestVoices:
             "Easton",
             "Zoey",
         ]
+
+
+class TestThinkingControls:
+    """/api/show reports how a model thinks; the picker and the caller both need it."""
+
+    def test_thinking_metadata_is_surfaced(self):
+        thin = {"models": [{"name": "qwen3.5:0.8b", "size": 1, "details": {"parameter_size": ""}}]}
+        rich = Response(
+            {
+                "capabilities": ["completion", "thinking"],
+                "thinking": {"values": [False, True], "default": True},
+            }
+        )
+        client, _ = make_client(
+            {("GET", "/api/tags"): Response(thin), ("POST", "/api/show"): rich}
+        )
+        model = client.list_models()[0]
+        assert model["thinking"] == {"values": [False, True], "default": True}
+
+    def test_a_model_without_thinking_controls_is_null(self):
+        thin = {"models": [{"name": "plain", "size": 1, "details": {"parameter_size": "7B"}}]}
+        rich = Response({"capabilities": ["completion"]})
+        client, _ = make_client(
+            {("GET", "/api/tags"): Response(thin), ("POST", "/api/show"): rich}
+        )
+        assert client.list_models()[0]["thinking"] is None

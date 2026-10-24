@@ -396,6 +396,7 @@ export function ChatView() {
               ...item,
               streaming: false,
               content: event.reply || item.content,
+              truncated: Boolean(event.truncated),
               metrics:
                 event.timings && typeof event.timings.total_s === "number"
                   ? {

@@ -16,7 +16,7 @@ character heuristic, so it fires on the truth and not on an estimate.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
 from loma.config import Settings
@@ -56,6 +56,8 @@ class Agent:
         self.client = client
         self.settings = settings
         self.last_prompt_tokens = 0
+        #: ``done_reason`` from the last call: "stop", "length", or empty.
+        self.last_finish_reason = ""
         self.compactions = 0
         self.last_compaction: Compaction | None = None
         #: Long-term memory, injected per request and never persisted here.
@@ -100,8 +102,9 @@ class Agent:
         self,
         user_text: str,
         *,
-        think: bool = False,
+        think: bool | str = False,
         extra_context: str | None = None,
+        on_thinking: Callable[[str], None] | None = None,
     ) -> Iterator[str]:
         """Yield assistant token deltas for ``user_text``.
 
@@ -145,9 +148,15 @@ class Agent:
                 ),
             }
 
-        return self._stream(messages, think=think)
+        return self._stream(messages, think=think, on_thinking=on_thinking)
 
-    def _stream(self, messages: list[dict[str, str]], *, think: bool) -> Iterator[str]:
+    def _stream(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        think: bool | str,
+        on_thinking: Callable[[str], None] | None = None,
+    ) -> Iterator[str]:
         parts: list[str] = []
         usage: dict[str, int] = {}
 
@@ -155,10 +164,13 @@ class Agent:
             usage.update(counts)
 
         try:
-            for delta in self.client.chat_stream(messages, think=think, on_usage=record):
+            for delta in self.client.chat_stream(
+                messages, think=think, on_usage=record, on_thinking=on_thinking
+            ):
                 parts.append(delta)
                 yield delta
         finally:
+            self.last_finish_reason = usage.get("done_reason", "")
             if usage.get("prompt_tokens"):
                 self.last_prompt_tokens = usage["prompt_tokens"]
             else:

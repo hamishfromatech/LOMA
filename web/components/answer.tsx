@@ -141,6 +141,13 @@ export function AnswerMessage({ message }: { message: ChatMessage }) {
           </div>
         )}
 
+        {message.truncated && !message.streaming && (
+          <p className="flex items-center gap-1.5 font-mono text-[10.5px] text-loma-accent/80">
+            <TriangleAlert className="size-3" />
+            cut off at the token limit — raise LOMA_MAX_TOKENS
+          </p>
+        )}
+
         {message.metrics && !message.streaming && (
           <div className="flex items-center justify-between gap-3 pt-0.5">
             <Trace

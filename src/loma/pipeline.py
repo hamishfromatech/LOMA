@@ -372,11 +372,23 @@ class VoicePipeline:
                 speaker.close()
 
         reply = strip_thinking("".join(parts)).strip()
+        truncated = self.agent.last_finish_reason == "length"
         if reply:
             self.last_reply = reply
+        elif truncated:
+            # The budget ran out before the model wrote anything — thinking
+            # tokens spend from the same allowance. Silence here looks like a
+            # broken assistant, so say what happened instead.
+            message = (
+                "The model hit its token limit before answering. "
+                "Raise LOMA_MAX_TOKENS, or turn thinking off."
+            )
+            log.warning("empty reply, done_reason=length (max_tokens=%s)", self.settings.max_tokens)
+            yield {"type": "error", "message": message}
 
         yield self._done_event(
             reply=reply,
+            truncated=truncated,
             intent=control.intent,
             control=control,
             batch=batch,
@@ -592,6 +604,7 @@ class VoicePipeline:
         started: float,
         first_token: float = 0.0,
         first_audio: float = 0.0,
+        truncated: bool = False,
     ) -> dict:
         compaction = self.agent.last_compaction
         return {
@@ -611,6 +624,7 @@ class VoicePipeline:
                 "total_s": round(time.perf_counter() - started, 3),
             },
             "context_tokens": self.agent.history_tokens,
+            "truncated": truncated,
             "compaction": {
                 "messages_removed": compaction.messages_removed,
                 "tokens_before": compaction.tokens_before,
