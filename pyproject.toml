@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "loma"
 version = "0.1.0"
-description = "LOMA - Local Offline Mini Assistant: faster-whisper STT + Bonsai 2 + Tev1 routing + Phonon TTS, under 3 GB of RAM."
+description = "LOMA - Local Offline Mini Assistant: faster-whisper STT + lfm3 text/vision models (swapped with Ollama keep_alive) + Needle 3 routing + Phonon TTS, under 3 GB of RAM."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

@@ -27,9 +27,27 @@ Anything else — mp3, speed, instructions — is rejected rather than ignored.
 ## Memory
 
 **`loma bench` says over budget**
-Expected total is ~1.7 GB. If you are far above that, check `loma models`: a
-leftover model from another project may still be resident. `ollama stop <name>`
-unloads it.
+Expected total is ~2.4 GB with one chat model resident (`lfm3` or `lfm3-vl`) plus
+`phonon`. If you are far above that, check `loma models`: a leftover model from
+another project may still be resident, or both chat models may be loaded.
+`ollama stop <name>` unloads one by hand.
+
+**Both chat models are resident**
+`loma models` should show one of `lfm3` / `lfm3-vl`, never both. If both appear,
+`LOMA_DYNAMIC_MODELS` was off for an earlier request, or another client (the
+Ollama CLI, another app) loaded the second one. `ollama stop lfm3-vl` and the
+next turn will swap normally. Setting `OLLAMA_MAX_LOADED_MODELS=1` makes Ollama
+enforce it too.
+
+**`this model does not support image input`**
+An image turn was answered by the text model. Either `LOMA_DYNAMIC_MODELS=false`,
+or the configured `LOMA_VLM_MODEL` does not advertise `vision` (check
+`ollama show <model>`). The settings page shows the same capability list.
+
+**The first turn after attaching an image is slow**
+That is the swap: the text model is unloaded and the vision model is loaded
+cold. It is one load per mode change, not per turn. Keep a longer
+`LOMA_KEEP_ALIVE` if you alternate often.
 
 **The machine swaps while listening**
 Lower `LOMA_COMPACT_TARGET_TOKENS` (try 4096). The LLM's KV cache grows with the
@@ -137,6 +155,11 @@ would rather spend RAM than forget.
 **`loma context` says 128k but the model still seems short-sighted**
 Check `LOMA_HISTORY_TURNS` (default 6). Trimming is a separate, harder cap than
 compaction.
+
+**The vision model reports a smaller window**
+`lfm3-vl` carries 128000 tokens, `lfm3` 262144. LOMA clamps `num_ctx` to the
+model's own `/api/show` value, so the vision model is not asked for a window it
+cannot allocate.
 
 **I set `LOMA_NUM_CTX` and nothing changed**
 The value is read at model load. Ollama keeps a loaded model until `keep_alive`

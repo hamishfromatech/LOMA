@@ -36,13 +36,51 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
+def _messages_from(raw: list[Any]) -> list[dict[str, Any]]:
+    """Keep the two roles and, for an assistant turn, a bounded tool trace.
+
+    The trace is names and arguments only. It exists so the next model turn can
+    see the tool-call shape again; results are never persisted.
+    """
+    messages: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "")
+        if role not in {"user", "assistant"}:
+            continue
+        message: dict[str, Any] = {
+            "role": role,
+            "content": str(item.get("content", "")),
+        }
+        trace = item.get("tool_trace")
+        if role == "assistant" and isinstance(trace, list):
+            clean = []
+            for entry in trace[:8]:
+                if not isinstance(entry, dict):
+                    continue
+                name = str(entry.get("name") or "")[:120]
+                arguments = entry.get("arguments")
+                if name:
+                    clean.append(
+                        {
+                            "name": name,
+                            "arguments": arguments if isinstance(arguments, dict) else {},
+                        }
+                    )
+            if clean:
+                message["tool_trace"] = clean
+        messages.append(message)
+    return messages
+
+
 @dataclass
 class Conversation:
     id: str
     title: str
     created_at: str
     updated_at: str
-    messages: list[dict[str, str]] = field(default_factory=list)
+    messages: list[dict[str, Any]] = field(default_factory=list)
     last_reply: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -71,11 +109,7 @@ class Conversation:
             title=str(data.get("title") or UNSAVED_TITLE),
             created_at=str(data.get("created_at") or _now()),
             updated_at=str(data.get("updated_at") or _now()),
-            messages=[
-                {"role": str(m.get("role")), "content": str(m.get("content", ""))}
-                for m in data.get("messages", [])
-                if m.get("role") in {"user", "assistant"}
-            ],
+            messages=_messages_from(data.get("messages", [])),
             last_reply=str(data.get("last_reply") or ""),
         )
 
@@ -129,9 +163,13 @@ class ConversationStore:
     def save(self, conversation: Conversation) -> None:
         self.ensure()
         conversation.updated_at = _now()
-        self._path(conversation.id).write_text(
-            json.dumps(conversation.to_dict(), indent=2, ensure_ascii=False) + "\n"
-        )
+        path = self._path(conversation.id)
+        # Write a sibling file, then rename. A crash mid-write must not leave a
+        # truncated conversation, and the rename is atomic on the same volume.
+        payload = json.dumps(conversation.to_dict(), indent=2, ensure_ascii=False) + "\n"
+        temporary = path.with_name(f"{path.name}.tmp")
+        temporary.write_text(payload)
+        temporary.replace(path)
 
     def delete(self, conversation_id: str) -> bool:
         path = self._path(conversation_id)

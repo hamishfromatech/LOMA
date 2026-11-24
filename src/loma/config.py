@@ -23,7 +23,8 @@ DEFAULT_SYSTEM_PROMPT = (
     "the user's own device. Your words are spoken aloud by a text-to-speech "
     "engine, so keep every answer to one to three short, natural sentences. "
     "Never use markdown, bullet points, code blocks, emoji, or URLs. Spell out "
-    "numbers and symbols the way a person would say them. If you do not know "
+    "numbers and symbols the way a person would say them. Say everything once: "
+    "never repeat a sentence or restate an answer. If you do not know "
     "something, say so briefly instead of guessing.\n\n"
     # The failure this prevents: a 0.8B reasoning model narrating its own
     # deliberation into the answer, which LOMA then speaks aloud.
@@ -59,25 +60,45 @@ class Settings:
 
     # Ollama
     ollama_host: str = "http://localhost:11434"
-    llm_model: str = "qwen3.5:0.8b"
+    llm_model: str = "lfm3:latest"
+    #: The model that reads images. With ``dynamic_models`` on, Ollama swaps it
+    #: in for a turn that carries an image and swaps it back out afterwards, so
+    #: the text model and the vision model are never both resident.
+    vlm_model: str = "lfm3-vl:2b"
     tts_model: str = "phonon"
     tts_voice: str = "default"
-    # Keep the models resident so a turn never pays a cold-load penalty.
+    # Keep the active model resident so consecutive turns never pay a cold-load
+    # penalty. ``0`` unloads it the moment the turn ends.
     keep_alive: str = "30m"
+    #: Trade one chat model for the other instead of keeping both in RAM/VRAM.
+    #: Ollama's ``keep_alive`` does the unloading; see model_manager.py.
+    dynamic_models: bool = True
 
     # Control phrases (stop / reset / repeat / exit) are matched by a tiny
     # deterministic lexicon — zero RAM, zero latency, no misreads.
     control_enabled: bool = True
 
-    # MCP tools — Needle 3 (35 MB) picks the tool and fills the arguments, so
-    # no tool schema and no second LLM pass is needed to reach one.
+    # MCP tools. The language model calls them with Ollama's native tool
+    # calling; Needle 3 is only a triage classifier (does this turn need tools,
+    # and roughly which ones) so a plain chat turn does not pay for a toolset.
     mcp_enabled: bool = True
     mcp_config: Path = _PROJECT_ROOT / "mcp.json"
-    # Below this confidence Needle's call is ignored and the LLM answers.
-    # This is per-toolset: measure your own true/false positives with
-    # `loma tools --probe` and move it. 0.50 separates them well on the demo
-    # tools; a missed tool is cheap, a wrong tool is not.
+    # Needle's triage gate. 0 means "any proposal counts": the classifier is
+    # recall-oriented and the LLM is the arbiter. A suppressed call (Needle
+    # wanted a tool but could not fill a required argument) also counts, which
+    # is what catches "roll a die" when the tool wants a `sides` value.
+    triage_min_confidence: float = 0.0
+    triage_enabled: bool = True
+    # Off by default. Shortlisting saves prompt tokens but a wrong shortlist
+    # makes the model hallucinate the missing tool ("what time is it?" answered
+    # with a made-up time because only the calculator was offered). Turn it on
+    # for a large toolset where the prompt cost dominates.
+    tool_shortlist: bool = False
+    # The shortlist/diagnostic floor: candidates are used only above this
+    # confidence when `tool_shortlist` is on. Also `loma tools --probe`'s floor.
     tool_min_confidence: float = 0.50
+    # Native tool-call rounds per turn before the model is asked to answer.
+    tool_rounds: int = 3
     tool_max_tools: int = 40
 
     # Speech to text
@@ -216,10 +237,12 @@ class Settings:
 
         return cls(
             ollama_host=_env("OLLAMA_HOST", "http://localhost:11434").rstrip("/"),
-            llm_model=prefs.get("llm_model") or _env("LOMA_LLM_MODEL", "qwen3.5:0.8b"),
+            llm_model=prefs.get("llm_model") or _env("LOMA_LLM_MODEL", "lfm3:latest"),
+            vlm_model=prefs.get("vlm_model") or _env("LOMA_VLM_MODEL", "lfm3-vl:2b"),
             tts_model=_env("LOMA_TTS_MODEL", "phonon"),
             tts_voice=prefs.get("tts_voice") or _env("LOMA_TTS_VOICE", "default"),
             keep_alive=_env("LOMA_KEEP_ALIVE", "30m"),
+            dynamic_models=_env("LOMA_DYNAMIC_MODELS", True),
             control_enabled=_env("LOMA_CONTROL_ENABLED", True),
             mcp_enabled=_env("LOMA_MCP_ENABLED", True),
             mcp_config=mcp_config,
@@ -231,6 +254,10 @@ class Settings:
             skills_dir=Path(_env("LOMA_SKILLS_DIR", str(_PROJECT_ROOT / "skills"))),
             skill_max_chars=_env("LOMA_SKILL_MAX_CHARS", 6000),
             tool_min_confidence=_env("LOMA_TOOL_MIN_CONFIDENCE", 0.50),
+            triage_min_confidence=_env("LOMA_TRIAGE_MIN_CONFIDENCE", 0.0),
+            tool_shortlist=_env("LOMA_TOOL_SHORTLIST", False),
+            triage_enabled=_env("LOMA_TRIAGE_ENABLED", True),
+            tool_rounds=_env("LOMA_TOOL_ROUNDS", 3),
             tool_max_tools=_env("LOMA_TOOL_MAX_TOOLS", 40),
             stt_model=_env("LOMA_STT_MODEL", "tiny"),
             stt_device=_env("LOMA_STT_DEVICE", "cpu"),

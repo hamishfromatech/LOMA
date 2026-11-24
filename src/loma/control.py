@@ -68,6 +68,20 @@ PHRASES: dict[str, frozenset[str]] = {
             "tell me about me", "what do know about",
         }
     ),
+    # "What tools do you have?" is a question about LOMA, not about the world,
+    # and the LLM has deliberately never seen a tool schema. Answering it
+    # deterministically keeps the answer true even when the router refuses.
+    # Written in normalised form; run `normalise()` when adding a phrase.
+    "tools": frozenset(
+        {
+            "what tools do have", "what tools available", "which tools do have",
+            "what your tools", "list your tools", "list tools",
+            "show me your tools", "show your tools", "what do",
+            "what able to do", "what do do", "what your capabilities",
+            "what skills do have", "what your skills", "list your skills",
+            "what tools does have", "which tools available",
+        }
+    ),
     "repeat": frozenset(
         {
             "repeat", "repeat it", "repeat that", "say again", "say it again",
@@ -88,7 +102,45 @@ PHRASES: dict[str, frozenset[str]] = {
 
 #: Checked in this order: a phrase that means "end the session" must win over one
 #: that only means "be quiet".
-_ORDER = ("exit", "reset", "identity", "about", "repeat", "stop")
+_ORDER = ("exit", "reset", "identity", "about", "tools", "repeat", "stop")
+
+#: A capability question phrased in a way the exact phrase set does not cover
+#: ("tell me about your capabilities"). Deliberately narrow: it wants an
+#: interrogative/listing lead, a capability noun, and a second-person or
+#: availability marker, so "what tools should I use to cut wood?" is not one.
+_CAPABILITY_ASK = re.compile(
+    # "tell me about your capabilities" / "what are your tools"
+    r"\b(?:what|which|list|show|tell me|name)\b[^.?!]{0,40}"
+    r"\b(?:you|your)\b[^.?!]{0,40}"
+    r"\b(?:tools?|skills?|capabilit(?:y|ies))\b"
+    # "what tools do you have" / "which tools are available"
+    r"|\b(?:what|which|list|show|tell me|name)\b[^.?!]{0,40}"
+    r"\b(?:tools?|skills?|capabilit(?:y|ies))\b[^.?!]{0,20}"
+    r"\b(?:you|your|have|has|available|offer|support)\b"
+    # "what can you do"
+    r"|\bwhat (?:can|are) (?:you|u|loma)\b",
+    re.IGNORECASE,
+)
+
+
+def is_capability_question(text: str) -> bool:
+    """True for "what can you do?" even when the exact phrase set misses it."""
+    return bool(_CAPABILITY_ASK.search(text))
+
+
+#: "Use your tools", "your tools are…" — the user is talking about LOMA's
+#: capabilities, not asking for a task. "What tools should I use to cut wood?"
+#: is deliberately not this: it has no second-person possessive.
+_OWN_TOOLS = re.compile(
+    r"\b(?:use|using|call|invoke|try)\s+(?:your|the)\s+tools?\b"
+    r"|\b(?:your|these|those)\s+tools?\b",
+    re.IGNORECASE,
+)
+
+
+def mentions_own_tools(text: str) -> bool:
+    """True when the sentence refers to LOMA's own tools."""
+    return bool(_OWN_TOOLS.search(text))
 
 #: "Remember that ..." is an open-ended command, so it is a prefix rather than a
 #: phrase. Matched against the raw utterance, before filler removal, because the
@@ -176,5 +228,13 @@ class ControlRouter:
                     latency_s=time.perf_counter() - started,
                     text=text,
                 )
+
+        if is_capability_question(text):
+            return ControlMatch(
+                intent="tools",
+                matched="capability question",
+                latency_s=time.perf_counter() - started,
+                text=text,
+            )
 
         return ControlMatch(latency_s=time.perf_counter() - started, text=text)

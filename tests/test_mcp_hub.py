@@ -187,3 +187,14 @@ def test_batch_serialises_for_the_cli():
     data = ToolBatch(calls=[call()]).as_dict()
     assert data["calls"][0]["tool"] == "roll_dice"
     assert data["calls"][0]["arguments"] == {"count": 2}
+
+
+def test_a_ui_hint_is_not_sent_to_the_model():
+    """`ui` is a presentation spec; the tool data is what the model needs."""
+    from loma.mcp_hub import _readable
+
+    result = '{"roll": 14, "sides": 20, "ui": {"type": "metric", "items": []}}'
+    assert _readable(result) == "roll=14; sides=20"
+
+    only_ui = '{"ui": {"type": "list", "items": ["a"]}}'
+    assert _readable(only_ui) == "done"

@@ -15,7 +15,9 @@ character heuristic, so it fires on the truth and not on an estimate.
 
 from __future__ import annotations
 
+import json
 import logging
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -50,6 +52,24 @@ class Compaction:
         return max(0, self.tokens_before - self.tokens_after)
 
 
+def _parse_tool_call(call: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Read Ollama's tool_calls shape, tolerating a JSON-string argument."""
+    function = call.get("function") or {}
+    name = str(function.get("name") or call.get("name") or "")
+    raw = function.get("arguments", call.get("arguments"))
+    if isinstance(raw, dict):
+        arguments = raw
+    elif isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+            arguments = parsed if isinstance(parsed, dict) else {}
+        except ValueError:
+            arguments = {}
+    else:
+        arguments = {}
+    return name, arguments
+
+
 class Agent:
     """A small stateful chat agent backed by Ollama."""
 
@@ -63,8 +83,16 @@ class Agent:
         self.last_compaction: Compaction | None = None
         #: Long-term memory, injected per request and never persisted here.
         self.memory_context = ""
-        #: The skill index every turn, plus any skill body loaded this turn.
+        #: A name + one-line index of the tools, set only for a capability
+        #: question. Never schemas: the router owns tool calls.
+        self.tool_context = ""
+        #: Any skill body loaded this turn.
         self.skill_context = ""
+        #: The chat model answering this turn, set by ``respond``. Compaction
+        #: uses the same model, so an image turn does not swap back to the text
+        #: model just to summarise.
+        self.model: str | None = None
+        self.num_ctx: int | None = None
         self._messages: list[dict[str, str]] = [
             {"role": "system", "content": settings.system_prompt}
         ]
@@ -84,39 +112,108 @@ class Agent:
         self.last_prompt_tokens = 0
         self.last_compaction = None
 
-    def load(self, messages: list[dict[str, str]]) -> None:
-        """Restore a conversation from disk, keeping the current system prompt."""
+    def load(self, messages: list[dict[str, Any]]) -> None:
+        """Restore a conversation from disk, keeping the current system prompt.
+
+        A saved tool trace is replayed as the wire protocol it came from
+        (assistant ``tool_calls`` + a ``role: tool`` message) with the results
+        omitted. Without that shape in the recent history, `lfm3` tends to
+        answer a follow-up from memory instead of calling the tool: after one
+        roll-die turn, "what time is it?" produced a made-up time 5/5 times.
+        """
         self._messages = [{"role": "system", "content": self.settings.system_prompt}]
-        for message in messages:
+        last_trace = max(
+            (
+                index
+                for index, message in enumerate(messages)
+                if message.get("role") == "assistant" and message.get("tool_trace")
+            ),
+            default=-1,
+        )
+        for index, message in enumerate(messages):
             role = message.get("role")
             content = message.get("content", "")
-            if role in {"user", "assistant"} and content:
-                self._messages.append({"role": role, "content": content})
+            if role not in {"user", "assistant"} or not content:
+                continue
+            if index == last_trace:
+                calls = []
+                for position, item in enumerate(message.get("tool_trace") or []):
+                    name = str(item.get("name") or "") if isinstance(item, dict) else ""
+                    if not name:
+                        continue
+                    arguments = (
+                        item.get("arguments")
+                        if isinstance(item, dict) and isinstance(item.get("arguments"), dict)
+                        else {}
+                    )
+                    calls.append(
+                        {
+                            "id": f"replay_{index}_{position}",
+                            "function": {
+                                "index": position,
+                                "name": name,
+                                "arguments": arguments,
+                            },
+                        }
+                    )
+                if calls:
+                    self._messages.append(
+                        {"role": "assistant", "content": "", "tool_calls": calls}
+                    )
+                    for _call in calls:
+                        self._messages.append(
+                            {"role": "tool", "content": "(result omitted from replay)"}
+                        )
+            self._messages.append({"role": role, "content": content})
         self.last_prompt_tokens = 0
         self.last_compaction = None
 
-    def transcript(self) -> list[dict[str, str]]:
-        """The persistable part of the conversation — no system messages."""
-        return [m for m in self._messages if m["role"] in {"user", "assistant"}]
+    def transcript(self) -> list[dict[str, Any]]:
+        """The persistable part of the conversation — no system messages.
 
-    def respond(
+        Only the most recent tool trace is kept. It carries names and arguments,
+        never results, and it is what lets the next turn's model recognise that
+        this conversation uses tools (see ``load``).
+        """
+        messages = [m for m in self._messages if m["role"] in {"user", "assistant"}]
+        last_trace = max(
+            (index for index, message in enumerate(messages) if message.get("tool_trace")),
+            default=-1,
+        )
+        for index, message in enumerate(messages):
+            if index != last_trace:
+                message.pop("tool_trace", None)
+        return messages
+
+    def record_exchange(self, user_text: str, reply: str) -> None:
+        """Store an exchange that was answered without a model.
+
+        Identity, capability and "remember…" answers are deterministic. Without
+        this they vanish from the transcript, so the next model turn sees the
+        user's question but not the correct answer — and contradicts it (a real
+        case: "what tools do you have?" answered correctly, then the next turn
+        claimed it had no tools).
+        """
+        user_text = user_text.strip()
+        reply = reply.strip()
+        if not user_text or not reply:
+            return
+        self._messages.append({"role": "user", "content": user_text})
+        self._messages.append({"role": "assistant", "content": reply})
+        self._trim()
+
+    def _begin_turn(
         self,
         user_text: str,
         *,
-        think: bool | str = False,
-        extra_context: str | None = None,
-        on_thinking: Callable[[str], None] | None = None,
-        images: list[str] | None = None,
-    ) -> Iterator[str]:
-        """Yield assistant token deltas for ``user_text``.
-
-        ``extra_context`` is a one-shot system note (a tool result, for
-        example). It is used for this call only and never persisted, so tool
-        payloads cannot accumulate in the window.
-        """
-        user_text = user_text.strip()
-        if not user_text:
-            return iter(())
+        images: list[str] | None,
+        model: str | None,
+        num_ctx: int | None,
+        extra_context: str | None,
+    ) -> list[dict[str, Any]]:
+        """Compact, append the user turn, and inject this turn's system notes."""
+        self.model = model
+        self.num_ctx = num_ctx
 
         # Compact before adding the new question, using real usage from the
         # previous turn.
@@ -134,7 +231,12 @@ class Agent:
         messages = self.messages
         notes = [
             note
-            for note in (self.memory_context, self.skill_context, extra_context)
+            for note in (
+                self.memory_context,
+                self.tool_context,
+                self.skill_context,
+                extra_context,
+            )
             if note
         ]
         if notes:
@@ -155,44 +257,197 @@ class Agent:
                     ]
                 ),
             }
+        return messages
 
-        return self._stream(messages, think=think, on_thinking=on_thinking)
-
-    def _stream(
+    def _end_turn(
         self,
-        messages: list[dict[str, str]],
-        *,
-        think: bool | str,
-        on_thinking: Callable[[str], None] | None = None,
-    ) -> Iterator[str]:
-        parts: list[str] = []
-        usage: dict[str, int] = {}
+        reply: str,
+        usage: dict[str, Any],
+        tool_trace: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """Record usage, the answer, and the usual trimming."""
+        self.last_finish_reason = str(usage.get("done_reason", ""))
+        if usage.get("prompt_tokens"):
+            self.last_prompt_tokens = int(usage["prompt_tokens"])
+        else:
+            self.last_prompt_tokens = estimate_messages_tokens(self.messages)
 
-        def record(counts: dict[str, int]) -> None:
-            usage.update(counts)
+        reply = reply.strip()
+        if reply:
+            message: dict[str, Any] = {"role": "assistant", "content": reply}
+            if tool_trace:
+                message["tool_trace"] = tool_trace
+            self._messages.append(message)
+        else:
+            # Nothing was produced — roll the user turn back so the next prompt
+            # is not polluted by a dangling turn.
+            if self._messages and self._messages[-1].get("role") == "user":
+                self._messages.pop()
+        self._trim()
+        self._drop_images()
+
+    def respond(
+        self,
+        user_text: str,
+        *,
+        think: bool | str = False,
+        extra_context: str | None = None,
+        on_thinking: Callable[[str], None] | None = None,
+        images: list[str] | None = None,
+        model: str | None = None,
+        num_ctx: int | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        execute_tool: Callable[[str, dict[str, Any]], str] | None = None,
+    ) -> Iterator[str]:
+        """Yield only the assistant's text; tool protocol events are consumed.
+
+        This is the text-only view used by tests and the CLI. The pipeline uses
+        :meth:`respond_events`, which also yields the tool calls so they can be
+        shown as cards and executed.
+        """
+        for event in self.respond_events(
+            user_text,
+            think=think,
+            extra_context=extra_context,
+            on_thinking=on_thinking,
+            images=images,
+            model=model,
+            num_ctx=num_ctx,
+            tools=tools,
+            execute_tool=execute_tool,
+        ):
+            if event["type"] == "delta":
+                yield event["text"]
+
+    def respond_events(
+        self,
+        user_text: str,
+        *,
+        think: bool | str = False,
+        extra_context: str | None = None,
+        on_thinking: Callable[[str], None] | None = None,
+        images: list[str] | None = None,
+        model: str | None = None,
+        num_ctx: int | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        execute_tool: Callable[[str, dict[str, Any]], str] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """One turn, including native tool calls, as a stream of events.
+
+        Events are ``{"type": "delta", "text": ...}``,
+        ``{"type": "tool", "name": ..., "arguments": ...}`` and
+        ``{"type": "tool_result", "name": ..., "result": ..., "latency_ms": ...,
+        "error": ...}``. The final answer may only arrive after one or more tool
+        rounds, and only the final answer is kept in the transcript: the
+        assistant tool-call message and the tool results exist for this turn.
+        """
+        user_text = user_text.strip()
+        if not user_text:
+            return
+
+        messages = self._begin_turn(
+            user_text,
+            images=images,
+            model=model,
+            num_ctx=num_ctx,
+            extra_context=extra_context,
+        )
+
+        max_rounds = max(0, self.settings.tool_rounds) if tools else 0
+        usage: dict[str, Any] = {}
+        final_reply = ""
+        partial_reply = ""
+        tool_trace: list[dict[str, Any]] = []
+        finished = False
 
         try:
-            for delta in self.client.chat_stream(
-                messages, think=think, on_usage=record, on_thinking=on_thinking
-            ):
-                parts.append(delta)
-                yield delta
-        finally:
-            self.last_finish_reason = usage.get("done_reason", "")
-            if usage.get("prompt_tokens"):
-                self.last_prompt_tokens = usage["prompt_tokens"]
-            else:
-                self.last_prompt_tokens = estimate_messages_tokens(messages)
+            for round_index in range(max_rounds + 1):
+                active_tools = tools if (tools and round_index < max_rounds) else None
+                calls: list[dict[str, Any]] = []
+                parts: list[str] = []
 
-            reply = "".join(parts).strip()
-            if reply:
-                self._messages.append({"role": "assistant", "content": reply})
-            else:
-                # Nothing was produced — roll the user turn back so the next
-                # prompt is not polluted by a dangling turn.
-                if self._messages and self._messages[-1].get("role") == "user":
-                    self._messages.pop()
-            self._trim()
+                def record(counts: dict[str, int]) -> None:
+                    usage.update(counts)
+
+                for delta in self.client.chat_stream(
+                    messages,
+                    think=think,
+                    model=model,
+                    num_ctx=num_ctx,
+                    tools=active_tools,
+                    on_usage=record,
+                    on_thinking=on_thinking,
+                    on_tool_calls=calls.extend,
+                ):
+                    parts.append(delta)
+                    yield {"type": "delta", "text": delta}
+                partial_reply = "".join(parts)
+
+                if not calls or active_tools is None:
+                    final_reply = partial_reply
+                    break
+
+                self._messages.append(
+                    {"role": "assistant", "content": partial_reply, "tool_calls": calls}
+                )
+
+                for call in calls:
+                    name, arguments = _parse_tool_call(call)
+                    tool_trace.append({"name": name, "arguments": arguments})
+                    yield {"type": "tool", "name": name, "arguments": arguments}
+
+                    started = time.perf_counter()
+                    try:
+                        if execute_tool is None:
+                            result = f"error: no executor for {name}"
+                        else:
+                            result = execute_tool(name, arguments)
+                        failed = result.startswith("error:")
+                    except Exception as exc:  # noqa: BLE001 - a tool must not end a turn
+                        result = f"error: {type(exc).__name__}: {exc}"
+                        failed = True
+                    latency = time.perf_counter() - started
+
+                    # Tool output is context, not an essay. Cap it so one verbose
+                    # MCP result cannot eat the window.
+                    result = result[:4000]
+                    yield {
+                        "type": "tool_result",
+                        "name": name,
+                        "result": result,
+                        "latency_ms": round(latency * 1000, 1),
+                        "error": failed,
+                    }
+                    self._messages.append({"role": "tool", "content": result})
+
+                messages = self.messages
+
+            finished = True
+        finally:
+            # The tool protocol is per-turn. Keep the user question and the final
+            # answer; drop the assistant tool_calls message and every tool result
+            # so neither the next prompt nor the conversation file grows by them.
+            self._messages = [
+                message
+                for message in self._messages
+                if message.get("role") != "tool" and not message.get("tool_calls")
+            ]
+            self._end_turn(
+                final_reply if finished else partial_reply,
+                usage,
+                tool_trace=tool_trace,
+            )
+
+    def _drop_images(self) -> None:
+        """Images are one-shot: keep the words, drop the pixels.
+
+        Two reasons. The conversation is persisted as text, and — with dynamic
+        model loading — the *next* turn is answered by the text model, which
+        rejects a history that still carries an image. The image did its job for
+        the turn that asked about it; the transcript keeps the question.
+        """
+        for message in self._messages:
+            message.pop("images", None)
 
     # -- memory policy --------------------------------------------------
     def _trim(self) -> None:
@@ -276,6 +531,8 @@ class Agent:
                     {"role": "user", "content": transcript},
                 ],
                 max_tokens=self.settings.compact_max_tokens,
+                model=self.model,
+                num_ctx=self.num_ctx,
             ).strip()
         except OllamaError as exc:
             log.warning("summarisation failed: %s", exc)

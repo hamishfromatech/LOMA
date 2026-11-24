@@ -47,15 +47,29 @@ from loma.audio import (
 )
 from loma.chunking import SentenceChunker
 from loma.config import Settings
-from loma.control import ControlMatch, ControlRouter
-from loma.mcp_hub import MCPHub, MCPTool, ToolBatch, ToolCall, load_mcp_config
+from loma.control import (
+    ControlMatch,
+    ControlRouter,
+    is_capability_question,
+    mentions_own_tools,
+)
+from loma.mcp_hub import (
+    MCPHub,
+    MCPTool,
+    ToolBatch,
+    ToolCall,
+    load_mcp_config,
+    ollama_tool_specs,
+    tool_index,
+)
 from loma.memory import MemoryGuard
 from loma.memory_store import MemoryStore
+from loma.model_manager import ModelManager
 from loma.ollama_client import OllamaClient
 from loma.skills import SkillStore
 from loma.stt import Transcriber, Transcript
 from loma.text import ThinkingSplitter, strip_thinking
-from loma.tool_router import NeedleRouter, ToolRoute
+from loma.tool_router import NeedleRouter, ToolTriage
 
 log = logging.getLogger(__name__)
 
@@ -70,6 +84,22 @@ FAST_REPLIES = {
     "repeat_empty": "I haven't said anything yet.",
     "exit": "Goodbye.",
 }
+
+
+def _spoken_tool(tool: MCPTool) -> str:
+    """One tool described the way a person would say it, not as a signature."""
+    text = " ".join((tool.description or tool.name).split())
+    # Docstrings often continue into Args:/Returns:; the first sentence is the
+    # capability, the rest is for the router.
+    if ". " in text:
+        text = text.split(". ", 1)[0]
+    text = text.rstrip(".")
+    if len(text) > 110:
+        text = text[:110].rsplit(" ", 1)[0].rstrip(",;:") + "…"
+    # "Return the time" -> "return the time", but leave "CPU..." alone.
+    if len(text) > 1 and text[0].isupper() and text[1].islower():
+        text = text[0].lower() + text[1:]
+    return text
 
 
 class StopLoop(Exception):
@@ -129,6 +159,9 @@ class VoicePipeline:
         self.settings = settings or Settings.from_env()
         self.client = OllamaClient(self.settings)
         self.agent = Agent(self.client, self.settings)
+        #: Which chat model is resident (text or vision). Ollama does the loading;
+        #: this decides which one and unloads the other.
+        self.models = ModelManager(self.client, self.settings)
         self.transcriber = Transcriber(self.settings)
         self.controls = ControlRouter(self.settings.control_enabled)
         self.tool_router = NeedleRouter(self.settings)
@@ -136,7 +169,6 @@ class VoicePipeline:
         config = load_mcp_config(self.settings.mcp_config) if self.settings.mcp_enabled else None
         self.hub = MCPHub(config, max_tools=self.settings.tool_max_tools)
         self._tools_ready = False
-        self.last_tool_route: ToolRoute | None = None
         self.last_reply = ""
         #: Long-term memory, injected into every turn. Set by the caller.
         self.memory: MemoryStore | None = None
@@ -235,9 +267,14 @@ class VoicePipeline:
         log.info(
             "warming up language model (%s, %d token window)",
             self.settings.llm_model,
-            self.settings.num_ctx,
+            self.models.num_ctx(self.settings.llm_model),
         )
-        self.client.chat([{"role": "user", "content": "hi"}])
+        self.models.prepare(self.settings.llm_model)
+        self.client.chat(
+            [{"role": "user", "content": "hi"}],
+            model=self.settings.llm_model,
+            num_ctx=self.models.num_ctx(self.settings.llm_model),
+        )
         if speech:
             log.info("warming up speech model (%s)", self.settings.tts_model)
             for _ in self.client.speech_pcm("ready"):
@@ -280,14 +317,25 @@ class VoicePipeline:
         started = time.perf_counter()
         control = ControlMatch()
 
-        if images and not self._supports_vision():
-            yield {
-                "type": "error",
-                "message": (
-                    f"{self.settings.llm_model} cannot read images. Switch to a "
-                    "vision model in the model picker."
-                ),
-            }
+        # Choose the model before anything else runs. An image turn is a vision
+        # turn; a text turn is not. `prepare` (below, after the control lexicon
+        # and the router) is what actually swaps the resident model.
+        model = self.models.model_for(has_images=bool(images))
+        if images and not self.models.supports_vision(model):
+            if self.settings.dynamic_models:
+                message = (
+                    f"The vision model ({model}) cannot read images. "
+                    "Pick one with vision support in Settings."
+                )
+            else:
+                message = (
+                    f"{model} cannot read images. Switch to a vision model in "
+                    "the model picker, or turn on dynamic models."
+                )
+            yield {"type": "error", "message": message}
+            # Do not send the image to a model that has told us it cannot read
+            # one: Ollama would reject the request with a 400 after the swap.
+            return
 
         # -- 1. deterministic control phrases --------------------------
         if route:
@@ -314,16 +362,57 @@ class VoicePipeline:
                 return
 
         # -- 2. tools ---------------------------------------------------
+        # Skills are still matched deterministically. Everything else is a
+        # triage question: does this turn need a toolset at all? If it does,
+        # the language model gets real schemas and calls the tools itself.
+        triage: ToolTriage | None = None
+        tool_specs: list[dict] = []
+        safe_tools: dict[str, MCPTool] = {}
+        batch: ToolBatch | None = None
+
         if use_tools and tool_batch is None:
-            batch = yield from self._tool_events(user_text)
+            batch = yield from self._skill_events(user_text)
+            if batch is None and self.settings.mcp_enabled:
+                self.start_tools()
+                if self.hub.tools:
+                    if self.settings.triage_enabled and self.tool_router.ready:
+                        triage = self.tool_router.classify(user_text)
+                        log.debug(
+                            "triage: tools=%s candidates=%s confidence=%.2f",
+                            triage.needs_tools,
+                            triage.candidates,
+                            triage.confidence,
+                        )
+                    else:
+                        # No triage available: offer everything rather than
+                        # silently losing the tool path.
+                        triage = ToolTriage(needs_tools=True, reason="triage skipped")
+                    if triage.needs_tools:
+                        tool_specs, safe_tools = ollama_tool_specs(
+                            self._select_tools(triage)
+                        )
         else:
             batch = tool_batch
 
         # -- 3. the language model -------------------------------------
+        # Only now, with a real answer to produce, trade models. "Stop" and a
+        # tool-only turn must not pay a cold load.
+        model = self.models.prepare(model)
+        num_ctx = self.models.num_ctx(model)
+
         if self.memory is not None:
             self.agent.memory_context = self.memory.as_context()
         else:
             self.agent.memory_context = ""
+        # A capability question is the one case where the model needs to know
+        # what exists. It gets a name plus one line of prose — never a schema —
+        # and every other turn gets nothing.
+        capability = (
+            is_capability_question(user_text) or mentions_own_tools(user_text)
+        ) and not (batch and batch.calls)
+        if capability and self.settings.mcp_enabled:
+            self.start_tools()
+        self.agent.tool_context = tool_index(self.hub.tools) if capability else ""
         self.agent.skill_context = self._skill_note()
         chunker = SentenceChunker()
         speaker = (
@@ -336,11 +425,47 @@ class VoicePipeline:
         first_audio = 0.0
         extra_context = batch.as_prompt() if batch and batch.calls else None
 
+        def execute_tool(name: str, arguments: dict) -> str:
+            """Run one call the model asked for. Never raises into the turn."""
+            tool = safe_tools.get(name)
+            if tool is None:
+                return f"error: no tool named {name}"
+            if tool.server == SKILL_TOOL_SERVER:
+                return self._run_skill_tool(arguments)
+            result = self.hub.call(tool.name, arguments)
+            log.info(
+                "tool %s(%s) -> %s",
+                tool.name,
+                json.dumps(arguments, ensure_ascii=False),
+                result[:120],
+            )
+            return result
+
+        executed: list[dict] = []
+        tool_seconds = 0.0
         splitter = ThinkingSplitter()
         try:
-            for delta in self.agent.respond(
-                user_text, think=think, extra_context=extra_context, images=images
+            for event in self.agent.respond_events(
+                user_text,
+                think=think,
+                extra_context=extra_context,
+                images=images,
+                model=model,
+                num_ctx=num_ctx,
+                tools=tool_specs or None,
+                execute_tool=execute_tool,
             ):
+                if event["type"] in {"tool", "tool_result"}:
+                    if event["type"] == "tool":
+                        executed.append(
+                            {"name": event["name"], "arguments": event["arguments"]}
+                        )
+                    else:
+                        tool_seconds += float(event.get("latency_ms", 0.0)) / 1000
+                    yield event
+                    continue
+
+                delta = event["text"]
                 if not first_token:
                     first_token = time.perf_counter() - started
                 parts.append(delta)
@@ -399,15 +524,24 @@ class VoicePipeline:
             log.warning("empty reply, done_reason=length (max_tokens=%s)", self.settings.max_tokens)
             yield {"type": "error", "message": message}
 
+        tool_calls = (
+            [{"name": call.tool.name, "arguments": call.arguments} for call in batch.calls]
+            if batch is not None
+            else executed
+        )
         yield self._done_event(
             reply=reply,
             truncated=truncated,
             intent=control.intent,
             control=control,
-            batch=batch,
             started=started,
             first_token=first_token,
             first_audio=first_audio,
+            model=model,
+            tool_names=[call["name"] for call in tool_calls],
+            tool_confidence=triage.confidence if triage is not None else (1.0 if batch else 0.0),
+            tool_calls=tool_calls,
+            tool_seconds=tool_seconds or (batch.latency_s if batch else 0.0),
         )
 
     # -- event helpers --------------------------------------------------
@@ -427,7 +561,7 @@ class VoicePipeline:
         if intent == "stop":
             # Half-duplex loop: by the time we hear "stop" nothing is playing.
             yield self._done_event(
-                reply="", intent=intent, control=control, batch=None, started=started
+                reply="", intent=intent, control=control, started=started
             )
             return
 
@@ -442,6 +576,9 @@ class VoicePipeline:
         if intent in {"identity", "about"}:
             text = self._memory_reply(intent)
 
+        if intent == "tools":
+            text = self._tools_reply()
+
         if intent == "reset":
             self.agent.reset()
             self.last_reply = ""
@@ -455,6 +592,10 @@ class VoicePipeline:
             yield {"type": "memory", "fact": control.fact, "stored": bool(text.startswith("Okay"))}
 
         if text:
+            # Keep deterministic answers in the transcript. Otherwise the model
+            # answers the next turn without having seen the correct answer.
+            if intent not in {"reset", "exit", "stop"}:
+                self.agent.record_exchange(control.text, text)
             yield {"type": "delta", "text": text}
             if speak:
                 play_pcm(
@@ -466,107 +607,126 @@ class VoicePipeline:
             self.last_reply = text if intent != "reset" else ""
 
         yield self._done_event(
-            reply=text, intent=intent, control=control, batch=None, started=started
+            reply=text, intent=intent, control=control, started=started
         )
         if intent == "exit":
             raise StopLoop
 
-    def _tool_events(self, user_text: str):
-        """Yield tool events, then return the executed batch to the caller."""
-        if not self.settings.mcp_enabled or not self.start_tools():
+    def _skill_events(self, user_text: str):
+        """The deterministic skill path, or None.
+
+        Skills are matched lexically — no model, no triage. The body arrives as
+        a one-shot system note rather than a flattened tool result, because a
+        200-line guide would be mangled by the tool-result cap.
+        """
+        if self.skills is None:
+            return None
+        skill = self.skills.match(user_text)
+        if skill is None:
             return None
 
-        skill = self.skills.match(user_text) if self.skills is not None else None
-        if skill is not None:
-            # Deterministic, no router, no model. The body still arrives as a
-            # system note, never as a flattened tool result.
-            arguments = {"name": skill.name}
-            tool = self._skill_tool()
-            # Matched lexically, not by the router: report it as its own intent
-            # so the trace does not claim the question was never routed.
-            yield {
-                "type": "route",
-                "intent": "skill",
-                "matched": skill.name,
-                "latency_ms": 0.0,
-            }
-            yield {
-                "type": "tool",
-                "name": SKILL_TOOL_NAME,
-                "arguments": arguments,
-                "confidence": 1.0,
-            }
-            started = time.perf_counter()
-            result = self._run_skill_tool(arguments)
-            latency = time.perf_counter() - started
-            call = ToolCall(tool=tool, arguments=arguments, result=result,
-                            latency_s=latency, error=result.startswith("error:"))
-            yield {
-                "type": "tool_result",
-                "name": SKILL_TOOL_NAME,
-                "result": result,
-                "latency_ms": round(latency * 1000, 1),
-                "error": call.error,
-            }
-            return ToolBatch(calls=[call])
-
-        route = self.tool_router.route(user_text)
-        self.last_tool_route = route
-        if not route.has_calls:
-            log.debug("no tool: %s", route.reason)
+        arguments = {"name": skill.name}
+        tool = self._skill_tool()
+        if tool is None:
             return None
 
-        for request in route.requests:
-            yield {
-                "type": "tool",
-                "name": request.tool.name,
-                "arguments": request.arguments,
-                "confidence": round(route.confidence, 4),
-            }
+        # Reported as its own intent so the trace does not claim the question
+        # was never routed.
+        yield {
+            "type": "route",
+            "intent": "skill",
+            "matched": skill.name,
+            "latency_ms": 0.0,
+        }
+        yield {
+            "type": "tool",
+            "name": SKILL_TOOL_NAME,
+            "arguments": arguments,
+            "confidence": 1.0,
+        }
+        started = time.perf_counter()
+        result = self._run_skill_tool(arguments)
+        latency = time.perf_counter() - started
+        call = ToolCall(
+            tool=tool,
+            arguments=arguments,
+            result=result,
+            latency_s=latency,
+            error=result.startswith("error:"),
+        )
+        yield {
+            "type": "tool_result",
+            "name": SKILL_TOOL_NAME,
+            "result": result,
+            "latency_ms": round(latency * 1000, 1),
+            "error": call.error,
+        }
+        return ToolBatch(calls=[call])
 
-        calls: list[ToolCall] = []
-        for request in route.requests:
-            call_started = time.perf_counter()
-            if request.tool.server == SKILL_TOOL_SERVER:
-                result = self._run_skill_tool(request.arguments)
-            else:
-                result = self.hub.call(request.tool.name, request.arguments)
-            latency = time.perf_counter() - call_started
-            log.info(
-                "tool %s(%s) -> %s",
-                request.tool.name,
-                json.dumps(request.arguments, ensure_ascii=False),
-                result[:120],
-            )
-            call = ToolCall(
-                tool=request.tool,
-                arguments=request.arguments,
-                result=result,
-                latency_s=latency,
-                error=result.startswith("error:"),
-            )
-            calls.append(call)
-            yield {
-                "type": "tool_result",
-                "name": request.tool.name,
-                "result": result,
-                "latency_ms": round(latency * 1000, 1),
-                "error": call.error,
-            }
+    def _select_tools(self, triage: ToolTriage) -> list[MCPTool]:
+        """The schema set to offer the model.
 
-        return ToolBatch(calls=calls) if calls else None
+        Shortlisting is opt-in (``tool_shortlist``). By default every tool is
+        offered once triage clears, because a wrong shortlist is not a smaller
+        prompt — it is a model that cannot call the tool it needs and invents an
+        answer instead.
+        """
+        tools = list(self.hub.tools)
+        if (
+            self.settings.tool_shortlist
+            and triage.candidates
+            and triage.confidence >= self.settings.tool_min_confidence
+        ):
+            wanted = set(triage.candidates)
+            shortlist = [tool for tool in tools if tool.name in wanted]
+            if shortlist:
+                return shortlist
+        return tools
 
-    def _supports_vision(self) -> bool:
-        """Does the selected model read images? Unknown counts as no.
+    def _supports_vision(self, model: str | None = None) -> bool:
+        """Does ``model`` (default: the selected chat model) read images?
 
         Checked per turn rather than cached: the model can be switched from the
         picker between one turn and the next.
         """
-        try:
-            info = self.client.model_info(self.settings.llm_model)
-        except Exception:  # noqa: BLE001 - never block a turn on discovery
-            return False
-        return "vision" in info["capabilities"]
+        return self.models.supports_vision(model or self.settings.llm_model)
+
+    def _tools_reply(self) -> str:
+        """Answer "what tools do you have?" from the live tool list.
+
+        Deterministic on purpose, for the same reason identity is: the language
+        model has never seen the tool list, so asking it is how you get an
+        invented answer. The one question about the assistant's own shape is
+        answered by the assistant's own state.
+        """
+        if self.settings.mcp_enabled:
+            self.start_tools()
+        tools = list(self.hub.tools)
+
+        if not tools:
+            reply = "I don't have any tools connected right now."
+        else:
+            spoken = [_spoken_tool(tool) for tool in tools[:6]]
+            if len(spoken) == 1:
+                reply = f"I have one tool: {spoken[0]}."
+            elif len(spoken) == 2:
+                reply = f"I have two tools: {spoken[0]}, and {spoken[1]}."
+            else:
+                reply = (
+                    f"I have {len(tools)} tools: "
+                    + ", ".join(spoken[:-1])
+                    + f", and {spoken[-1]}."
+                )
+            if len(tools) > len(spoken):
+                reply = reply[:-1] + f", plus {len(tools) - len(spoken)} more."
+
+        names = self.skills.names() if self.skills is not None else []
+        if names:
+            reply += (
+                f" I also have {len(names)} short skill guide"
+                f"{'' if len(names) == 1 else 's'} I can load when a task needs one."
+            )
+        return reply
 
     def _memory_reply(self, intent: str) -> str:
         """Answer "who am I" / "what do you know about me" from the file.
@@ -655,11 +815,15 @@ class VoicePipeline:
         reply: str,
         intent: str,
         control: ControlMatch,
-        batch: ToolBatch | None,
         started: float,
         first_token: float = 0.0,
         first_audio: float = 0.0,
         truncated: bool = False,
+        model: str = "",
+        tool_names: list[str] | None = None,
+        tool_confidence: float = 0.0,
+        tool_calls: list[dict] | None = None,
+        tool_seconds: float = 0.0,
     ) -> dict:
         compaction = self.agent.last_compaction
         return {
@@ -667,13 +831,13 @@ class VoicePipeline:
             "reply": reply,
             "intent": intent,
             "matched": control.matched,
-            "tool": list(batch.names) if batch else [],
-            "tool_confidence": round(self.last_tool_route.confidence, 4)
-            if batch and self.last_tool_route
-            else 0.0,
+            "model": model,
+            "tool": tool_names or [],
+            "tool_confidence": round(float(tool_confidence), 4),
+            "tool_calls": tool_calls or [],
             "timings": {
                 "route_ms": round(control.latency_s * 1000, 3),
-                "tool_ms": round(batch.latency_s * 1000, 1) if batch else 0.0,
+                "tool_ms": round(tool_seconds * 1000, 1),
                 "first_token_s": round(first_token, 3),
                 "first_audio_s": round(first_audio, 3),
                 "total_s": round(time.perf_counter() - started, 3),
@@ -724,6 +888,7 @@ class VoicePipeline:
         save_wav: Path | None = None,
         think: bool = False,
         tool_batch: ToolBatch | None = None,
+        images: list[str] | None = None,
     ) -> TurnResult:
         """Answer without routing — used by benchmarks and tests."""
         return self._consume(
@@ -736,6 +901,7 @@ class VoicePipeline:
             use_tools=False,
             think=think,
             tool_batch=tool_batch,
+            images=images,
         )
 
     def _consume(
@@ -750,6 +916,7 @@ class VoicePipeline:
         use_tools: bool,
         think: bool = False,
         tool_batch: ToolBatch | None = None,
+        images: list[str] | None = None,
     ) -> TurnResult:
         started = time.perf_counter()
         result = TurnResult(transcript=user_text)
@@ -763,6 +930,7 @@ class VoicePipeline:
             use_tools=use_tools,
             think=think,
             tool_batch=tool_batch,
+            images=images,
             audio_format="pcm" if save_wav else "wav",
         ):
             kind = event["type"]
@@ -788,8 +956,9 @@ class VoicePipeline:
                 result.compaction = self.agent.last_compaction
                 if event["tool"]:
                     result.tool = ", ".join(event["tool"])
-                    if self.last_tool_route and self.last_tool_route.requests:
-                        result.tool_args = self.last_tool_route.requests[0].arguments
+                calls = event.get("tool_calls") or []
+                if calls:
+                    result.tool_args = calls[0].get("arguments", {})
 
         if save_wav and pcm_chunks:
             write_wav(save_wav, b"".join(pcm_chunks), self.settings.tts_sample_rate)

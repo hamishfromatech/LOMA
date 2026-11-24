@@ -21,17 +21,15 @@ LOMA is four stages and two very small models:
                         ▼                                ▼
                      say()                    ┌──────────────────────────┐
                    (no LLM)                   │ tool_router.py  Needle 3 │
-                                              │  tool + arguments or none│
+                                              │  triage: tools or none   │
+                                              │  + candidate shortlist   │
                                               └──────────────────────────┘
-                                                   │ call          │ none
-                                                   ▼               │
-                                              mcp_hub.py           │
-                                              FastMCP client       │
-                                                   │ result         │
-                                                   └───────┬────────┘
+                                                           │ schemas (if any)
                                                            ▼
                                               ┌──────────────────────────┐
-                                              │ agent.py   qwen3.5:0.8b  │
+                                              │ agent.py  lfm3:latest    │
+                                              │ native tool calls        │◄──► mcp_hub.py
+                                              │ or lfm3-vl:2b for images │     FastMCP client
                                               │ 128k window, compaction  │
                                               └──────────────────────────┘
                                                            │ sentences
@@ -93,28 +91,71 @@ Anything that is not an exact control phrase falls through. That is the safe
 direction to fail: a missed "stop" costs one spoken sentence; a false "stop"
 swallows a real question.
 
-### 4. Needle 3 for tools
+### 4. Needle 3 for triage
 
 [Needle](https://github.com/cactus-compute/needle) is an on-device automation
-model: a 35 MB weight file in an 8–29 MB engine, trained to turn a toolset and a
-sentence into **well-formed calls with the arguments already filled in**.
+model: a 35 MB weight file in an 8–29 MB engine. In LOMA it is a **classifier**,
+not the caller. It answers two questions:
 
-Two properties make it the right fit:
+* **Does this turn need tools at all?** An off-topic request returns no calls;
+  that is the signal to answer without sending any schema.
+* **Roughly which tools?** The proposed names can become a shortlist, but
+  shortlisting is opt-in (`tool_shortlist`). By default every schema is offered
+  once triage clears, because a wrong shortlist does not save an answer — it
+  stops the model from calling the tool it needs.
 
-* **Grammar-constrained decoding.** It compiles a byte-level grammar from the
-  tool schemas, so a call cannot be malformed and a number cannot land in a
-  string field.
-* **It refuses.** An off-topic request returns an empty call list with low
-  confidence instead of inventing a tool.
+The language model then does the actual call with Ollama's native tool calling:
+it reads the schemas, fills the arguments, and may chain up to
+`LOMA_TOOL_ROUNDS` calls. Needle's grammar-constrained argument filling is still
+available as `route()` for diagnosing tool descriptions, but it is not on the
+turn path.
 
-Replacing the System One router and the LLM argument-extraction pass with Needle
-removed **1.2 GB of RAM and a whole generation** from every tool turn: tool
-routing is now ~60 ms and no tool schema ever enters the LLM prompt.
+This split kept the useful part of the original design — a plain chat turn does
+not pay for a forty-tool prompt — while fixing the part a 35 MB classifier was
+never going to win: "roll a die" scored 0.13 and was dropped, where `lfm3` calls
+`roll_die(sides=6)` directly.
 
 ### 5. Tool design
 
-Needle is accurate only if the tools are described well. Three rules, measured
-on the demo server:
+On a turn the triage gate clears, the model receives the real schemas and calls
+the tools. The protocol is per-turn: the assistant `tool_calls` message and the
+`role: tool` results are dropped before the transcript is saved, so the next
+prompt sees only the question and the final answer. Tool output is capped at
+4,000 characters for the same reason.
+
+A plain chat turn receives no schemas at all. It does receive a capability index
+— a name and one line of prose per tool — and only when the user asks what LOMA
+can do. Common phrasings are answered deterministically from `hub.tools`
+(`control.py` → intent `tools`), so the usual question never reaches a model;
+the index covers the paraphrases that slip past the lexicon.
+
+### Rendering a tool result
+
+A result leaves the server as the tool's raw string, but the client does not
+show it as JSON. `web/components/tool-cards.tsx` resolves it in three steps:
+
+1. a **declarative spec** the tool returned under `ui` / `_loma_ui`
+   (`metric`, `keyvalue`, `table`, `list`, `code`, `progress`);
+2. a **component registered by tool name** (the die, clock, calculator and
+   memory bar for the demo tools);
+3. a generic key/value card.
+
+The spec is validated and capped in `web/lib/tool-ui.ts`; there is no HTML or
+CSS path, so a tool cannot turn a result into markup. `_readable()` drops the
+`ui` key before the model sees the result.
+
+The client/server split follows the AI SDK (`message.parts` → `tool-*`) and
+CopilotKit (`useFrontendTool({ render })`) lifecycle, without adopting either
+runtime: LOMA's SSE events already carry the state.
+
+One implementation detail matters for tool-calling itself: the **last** turn's
+tool names and arguments are kept as `tool_trace` on the assistant message and
+replayed as an empty-result protocol on the next load. Results are never stored.
+The replay exists because `lfm3`, shown a plain answer after a tool turn, stops
+calling tools for follow-ups; with the protocol in recent history it does.
+
+Tool descriptions are still the accuracy knob. Three rules, measured on the
+demo server:
 
 | Change | Result |
 |---|---|
@@ -122,12 +163,18 @@ on the demo server:
 | same tool, `Args:` docs on both parameters | `sides=20, count=20` — still wrong |
 | split into `roll_die(sides)` with an `Args:` doc | `sides=20` — right, confidence 0.85 |
 
+Triage retries compound requests clause by clause only when the whole utterance
+produces no candidate. "Roll a d20, then tell me 17 times 24" scores 0.05 as one
+sentence but yields candidates per clause; the whole-utterance result always
+wins when it exists, so an already-working single request is not split.
+
 So:
 
 1. **One tool per action.** Two numeric parameters on one tool is the failure
    mode. Split them.
 2. **Describe every parameter.** FastMCP only emits parameter descriptions when
-   the docstring has an `Args:` section; without it Needle sees bare types.
+   the docstring has an `Args:` section; without it both the triage classifier
+   and the calling model see bare types.
 3. **Name it the way a user speaks it.** "roll a d20" should match a tool whose
    description mentions a d20.
 
@@ -178,8 +225,40 @@ Everything degrades instead of crashing:
 | Version | Router | RAM |
 |---|---|---|
 | Tev1 0.8B + 2B LLM @128k | 1211 MB | 3052 MB |
-| Needle 3 + 0.8B LLM @128k | ~45 MB | **1692 MB** |
+| Needle 3 + 0.8B LLM @128k | ~45 MB | 1692 MB |
+| Needle 3 + lfm3 / lfm3-vl, swapped | ~45 MB | **2431 MB** measured on a 32 GB M2 Max (both resident: 4166 MB) |
 
-Routing got 27× cheaper in memory and roughly 3× faster, and control-phrase
+Routing got 27× cheaper in memory and roughly ×3 faster, and control-phrase
 accuracy went from "abstains on the single most important word" to 100% on a
 22-case test set.
+
+## Two chat models, one resident
+
+`model_manager.py` decides which chat model answers a turn, and Ollama's
+`keep_alive` does the loading and unloading:
+
+```
+has an image?  no  -> llm_model (lfm3)     unload vlm_model with keep_alive=0
+               yes -> vlm_model (lfm3-vl) unload llm_model with keep_alive=0
+```
+
+The decision happens after the control lexicon and the tool router, so a "stop"
+phrase or a tool-only turn never pays a cold load. Unloading is a synchronous
+`POST /api/generate` with `keep_alive: 0`: when it returns, the model's memory
+has been released, so the next request loads into a free budget. The load cost
+appears as the next turn's first token (1.22 s cold versus 0.27 s warm on an M2
+Max); the unload itself is milliseconds.
+
+Three details make the swap safe rather than clever:
+
+1. **Per-request, not per-process.** `model` and `num_ctx` travel on each
+   `chat_stream`/`chat_json` call, so one client serves both models.
+2. **The window is clamped per model.** `lfm3` reports `262144`, `lfm3-vl`
+   reports `128000`; asking the VLM for 256k is a 400. `ModelManager.num_ctx()`
+   reads the ceiling from `/api/show` and clamps.
+3. **Images are one-shot.** The pixels are dropped from the transcript after the
+   turn. Otherwise the next text turn would resend an image to `lfm3`, which
+   rejects it — and the conversation file would grow by megabytes of base64.
+
+`loma bench --swap` exercises text → image → text and prints `/api/ps` after each
+phase.

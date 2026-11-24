@@ -147,6 +147,7 @@ export function SettingsView() {
   const change = useCallback(
     async (patch: {
       llm_model?: string
+      vlm_model?: string
       tts_voice?: string
       temperature?: number
       speak_replies?: boolean
@@ -272,6 +273,15 @@ export function SettingsView() {
   const selectedModel = settings.options.llm_models.find(
     (model) => model.name === settings.llm_model,
   )
+  // A model with no reported capabilities is kept: "unknown" is not "cannot
+  // see". The API is the authority on whether the configured one works.
+  const visionModels = settings.options.llm_models.filter(
+    (model) =>
+      model.capabilities.length === 0 || model.capabilities.includes("vision"),
+  )
+  const selectedVisionModel = settings.options.llm_models.find(
+    (model) => model.name === settings.vlm_model,
+  )
 
   return (
     <div className="mx-auto w-full max-w-3xl px-4 pb-16">
@@ -351,6 +361,49 @@ export function SettingsView() {
                   selectedModel.parameters,
                   selectedModel.family,
                   selectedModel.capabilities.join(", "),
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </p>
+            )}
+          </div>
+
+          <Separator className="bg-white/[0.05]" />
+
+          <div className="grid gap-2">
+            <Label htmlFor="vlm">Vision model</Label>
+            <Select
+              value={settings.vlm_model}
+              onValueChange={(value) => void change({ vlm_model: String(value) })}
+              disabled={busy !== null}
+            >
+              <SelectTrigger id="vlm" aria-label="Vision model" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent
+                alignItemWithTrigger={false}
+                sideOffset={6}
+                className="border border-loma-line p-1 shadow-2xl shadow-black/70"
+              >
+                {visionModels.map((model) => (
+                  <SelectItem key={model.name} value={model.name} className="pl-2.5">
+                    {model.name} · {Math.round(model.size_mb)} MB
+                    {model.parameters ? ` · ${model.parameters}` : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-[11.5px] leading-relaxed text-loma-faint">
+              {settings.dynamic_models
+                ? "An image turn switches to this model and unloads the language model first, so only one chat model sits in memory. It swaps back on the next text turn."
+                : "Dynamic model loading is off, so the language model answers everything. Turn it on with LOMA_DYNAMIC_MODELS=1 to swap this model in for images."}
+            </p>
+            {selectedVisionModel && (
+              <p className="font-mono text-[10px] text-loma-faint">
+                {[
+                  selectedVisionModel.parameters,
+                  selectedVisionModel.family,
+                  selectedVisionModel.capabilities.join(", "),
                 ]
                   .filter(Boolean)
                   .join(" · ")}

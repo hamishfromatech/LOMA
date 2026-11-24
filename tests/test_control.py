@@ -127,6 +127,7 @@ def test_every_intent_has_phrases():
         "exit",
         "identity",
         "about",
+        "tools",
     }
     assert all(PHRASES[i] for i in PHRASES)
 

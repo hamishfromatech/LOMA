@@ -1,7 +1,8 @@
 # What LOMA asks of a model, and what it found
 
-Every capability below was measured against a real Ollama (`0.40.10`) on an
-Apple Silicon machine with `qwen3.5:0.8b` and `phonon`, not read off a spec sheet.
+Every capability below was measured against a real Ollama (`0.40.10`/`0.40.12`)
+on an Apple Silicon machine with `qwen3.5:0.8b`, `phonon`, and later the `lfm3`
+pair, not read off a spec sheet.
 Where a capability turned out not to help, that is written down here too: a
 feature that costs a request and buys nothing is worse than the one that was
 never added.
@@ -36,7 +37,13 @@ voice, `default`.
 | model | `thinking` |
 |---|---|
 | `qwen3.5:0.8b` | `{"values": [false, true], "default": true}` |
+| `lfm3:latest` | `{"values": [true, false], "default": true}` |
+| `lfm3-vl:2b` | `{"values": [true, false], "default": true}` |
 | `glm-5.3-flash:cloud` | `{"values": ["low","high","max"], "default": "max"}` |
+
+Both LFM3 models default thinking to `true`. LOMA always sends `think: false`
+for a spoken turn; at the model's default, a short prompt spends its entire
+budget on reasoning and returns an empty `content`.
 
 Reasoning arrives on `message.thinking`, separate from `message.content`, and is
 never spoken. But it is **off by default**, because it was measured:
@@ -49,6 +56,37 @@ never spoken. But it is **off by default**, because it was measured:
 A model with no `thinking` block may still reason on its own. That is why
 `loma/text.py` exists: leaked reasoning, terminated by `</think>`, is stripped
 before the sentence chunker can speak it.
+
+## Context ceilings
+
+`/api/show` carries the ceiling under an architecture-prefixed key:
+
+| model | key | value |
+|---|---|---|
+| `lfm3:latest` | `lfm3.context_length` | 262144 |
+| `lfm3-vl:2b` | `lfm3_vl.context_length` | 128000 |
+
+Sending `num_ctx: 262144` to the vision model is a hard 400, so
+`ModelManager.num_ctx()` clamps per model rather than applying the machine-wide
+window to everything.
+
+## Native tool calling
+
+Ollama's `/api/chat` accepts a `tools` array and returns `message.tool_calls`
+(arguments as an object, not a string). Measured on `lfm3:latest` with the four
+demo tools:
+
+| Utterance | Needle triage | `lfm3` with schemas |
+|---|---|---|
+| "roll a die" | 0.05–0.20, no executable call | `roll_die(sides=6)` |
+| "17 times 24" | 0.79, `calculate(17 * 24)` | `calculate(expression="17 * 24")` |
+| "grab the current time and roll the dice and tell me what 1+1/1*2 is" | 0.13 as one sentence; three candidates clause by clause | three correct calls in one round |
+| "how are you" | proposes `get_current_time` (false positive) | **no call** — answers normally |
+| "tell me a joke" | suppressed `calculate` (false positive) | **no call** |
+
+The model is a better caller than the 35 MB classifier; the classifier is a
+better gate than sending schemas on every turn. That is why the triage floor is
+0, candidate shortlisting is opt-in, and the LLM decides at the end.
 
 ## Vision
 
@@ -84,10 +122,11 @@ contradicted the tool result outright. It is not the default. `chat_stream`
 accepts `response_format` for callers that want it, but drops the constraint for
 cloud models, which the docs say do not implement `format`.
 
-There is also nothing in LOMA left to constrain: control words are a lexicon, the
-tool choice is Needle's grammar-constrained decoder, memory extraction is
-`"remember that …"`, and titles are derived lexically. That is the design — the
-only free prose in the system is the answer itself.
+There is also little in LOMA left to constrain: control words are a lexicon,
+Needle triages tools, memory extraction is `"remember that …"`, and titles are
+derived lexically. That is the design — the only free prose in the system is the
+answer itself. Tool arguments are the exception now: the calling model fills
+them, which is why the triage gate and the per-call validation still matter.
 
 ## Streaming
 

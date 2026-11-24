@@ -160,6 +160,7 @@ export function ChatView() {
   const [status, setStatus] = useState<Status | null>(null)
   const [settings, setSettings] = useState<SettingsPayload | null>(null)
   const [models, setModels] = useState<ModelOption[]>([])
+  const [autoVision, setAutoVision] = useState(false)
   const [attachments, setAttachments] = useState<{ id: string; dataUrl: string }[]>([])
   const [modelsLoading, setModelsLoading] = useState(false)
   const [chatsOpen, setChatsOpen] = useState(false)
@@ -214,6 +215,9 @@ export function ChatView() {
     try {
       const payload = await listModels()
       setModels(payload.models)
+      // Images are served by the configured vision model, not necessarily by
+      // the selected chat model, so the attach button follows the API's answer.
+      setAutoVision(Boolean(payload.vision))
     } catch {
       /* keep the last known list rather than blanking the picker */
     } finally {
@@ -472,6 +476,7 @@ export function ChatView() {
                       firstAudioS: event.timings.first_audio_s ?? 0,
                       totalS: event.timings.total_s ?? 0,
                       contextTokens: event.context_tokens ?? 0,
+                      model: event.model,
                     }
                   : item.metrics,
             }))
@@ -517,7 +522,8 @@ export function ChatView() {
   }, [stop])
 
   const currentModel = models.find((item) => item.name === settings?.llm_model)
-  const visionEnabled = currentModel?.capabilities.includes("vision") ?? false
+  const visionEnabled =
+    autoVision || (currentModel?.capabilities.includes("vision") ?? false)
   const empty = messages.length === 0
   const storedTitle = conversations.find((item) => item.id === activeId)?.title
   const firstLine = messages.find((item) => item.role === "user")?.content ?? ""

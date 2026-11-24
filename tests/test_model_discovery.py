@@ -248,6 +248,24 @@ class TestThinkingControls:
         assert client.list_models()[0]["thinking"] is None
 
 
+class TestContextWindow:
+    """A per-turn num_ctx above the model's ceiling must be clamped."""
+
+    def test_reads_the_architecture_prefixed_key(self):
+        client, _ = make_client(
+            {
+                ("POST", "/api/show"): Response(
+                    {"model_info": {"lfm3_vl.context_length": 128_000}}
+                )
+            }
+        )
+        assert client.context_length("lfm3-vl:latest") == 128_000
+
+    def test_missing_context_is_zero_not_a_guess(self):
+        client, _ = make_client({("POST", "/api/show"): Response({"model_info": {}})})
+        assert client.context_length("unknown") == 0
+
+
 class StreamStub(StubHTTP):
     """Adds the streaming context manager chat_stream uses."""
 
@@ -298,6 +316,13 @@ class TestStructuredOutputs:
         _, payload = run_stream(client, response_format=self.SCHEMA)
         assert payload is not None and payload["format"] == self.SCHEMA
 
+    def test_the_overridden_model_is_the_one_asked(self):
+        client, _ = make_client({})
+        _, payload = run_stream(client, model="lfm3-vl:latest", num_ctx=128_000)
+        assert payload is not None
+        assert payload["model"] == "lfm3-vl:latest"
+        assert payload["options"]["num_ctx"] == 128_000
+
     def test_no_format_field_without_a_request(self):
         client, _ = make_client({})
         _, payload = run_stream(client)
@@ -316,3 +341,47 @@ class TestStructuredOutputs:
         usage: dict = {}
         run_stream(client, on_usage=usage.update)
         assert usage["done_reason"] == "stop"
+
+
+class TestNativeToolCalling:
+    """The LLM calls tools now; the client must send schemas and surface calls."""
+
+    TOOL = {
+        "type": "function",
+        "function": {
+            "name": "roll_die",
+            "description": "Roll a die.",
+            "parameters": {"type": "object", "properties": {"sides": {"type": "integer"}}},
+        },
+    }
+
+    def test_tools_are_sent_and_tool_calls_are_reported(self):
+        client, _ = make_client({})
+        lines = [
+            '{"message": {"content": "", "tool_calls": [{"id": "call_1", '
+            '"function": {"index": 0, "name": "roll_die", "arguments": {"sides": 20}}}]}, '
+            '"done": false}',
+            '{"message": {"content": ""}, "done": true, "done_reason": "stop"}',
+        ]
+        stub = StreamStub(lines)
+        client._http = stub  # type: ignore[assignment]
+        calls: list[dict] = []
+
+        text = "".join(
+            client.chat_stream(
+                [{"role": "user", "content": "roll a d20"}],
+                tools=[self.TOOL],
+                on_tool_calls=calls.extend,
+            )
+        )
+
+        assert text == ""
+        assert stub.payload is not None
+        assert stub.payload["tools"] == [self.TOOL]
+        assert calls[0]["function"]["name"] == "roll_die"
+        assert calls[0]["function"]["arguments"] == {"sides": 20}
+
+    def test_no_tools_field_without_a_schema_set(self):
+        client, _ = make_client({})
+        _, payload = run_stream(client)
+        assert payload is not None and "tools" not in payload

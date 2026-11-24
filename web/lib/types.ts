@@ -1,3 +1,31 @@
+export type ToolUiItem = {
+  label: string
+  value: string
+  hint?: string
+  /** 0–100. Draws a bar when present. */
+  percent?: number
+}
+
+/**
+ * A declarative card a tool can return alongside its data. The client renders a
+ * whitelist of these primitives — never arbitrary HTML — so a tool decides how
+ * its result looks without becoming a script.
+ */
+export type ToolUiSpec =
+  | { type: "metric"; title?: string; subtitle?: string; items: ToolUiItem[] }
+  | { type: "keyvalue"; title?: string; items: ToolUiItem[] }
+  | { type: "table"; title?: string; columns: string[]; rows: string[][] }
+  | { type: "list"; title?: string; items: string[] }
+  | { type: "code"; title?: string; language?: string; code: string }
+  | {
+      type: "progress"
+      title?: string
+      label: string
+      value: number
+      max?: number
+      unit?: string
+    }
+
 export type ToolCallView = {
   id: string
   name: string
@@ -6,6 +34,8 @@ export type ToolCallView = {
   error?: boolean
   latencyMs?: number
   status: "running" | "done" | "error"
+  /** Parsed from the tool result's `ui` (or `_loma_ui`) field. */
+  ui?: ToolUiSpec
 }
 
 export type TurnMetrics = {
@@ -15,6 +45,8 @@ export type TurnMetrics = {
   firstAudioS: number
   totalS: number
   contextTokens: number
+  /** Which chat model answered — lfm3 for text, lfm3-vl for an image turn. */
+  model?: string
 }
 
 export type ChatMessage = {
@@ -39,8 +71,24 @@ export type Status = {
   models: {
     python_rss_mb: number
     ollama_mb: number
+    ollama_vram_mb: number
     total_mb: number
-    models: { name: string; size_mb: number; runner: string }[]
+    models: {
+      name: string
+      size_mb: number
+      vram_mb: number
+      runner: string
+      processor?: string
+    }[]
+  }
+  /** Which chat model is resident, and how often the swap has run. */
+  model_manager?: {
+    active: string | null
+    llm_model: string
+    vlm_model: string
+    dynamic: boolean
+    swaps: number
+    last_swap: { from: string; to: string; unload_seconds: number } | null
   }
   memory_budget_mb: number
   context: {
@@ -52,6 +100,9 @@ export type Status = {
   tools: { name: string; description: string; required: string[] }[]
   config: {
     llm_model: string
+    vlm_model?: string
+    dynamic_models?: boolean
+    active_model?: string | null
     tts_model: string
     stt_model: string
     temperature: number
@@ -72,6 +123,8 @@ export type StreamEvent =
       result: string
       latency_ms: number
       error: boolean
+      /** Optional declarative card the tool returned. */
+      ui?: unknown
     }
   | { type: "delta"; text: string }
   | { type: "audio"; sentence: string; b64: string; format: string }
@@ -80,6 +133,8 @@ export type StreamEvent =
       reply: string
       intent: string
       matched: string
+      /** The chat model that answered (text or vision). */
+      model?: string
       tool: string[]
       tool_confidence: number
       timings: {
@@ -115,6 +170,12 @@ export type ModelOption = {
 export type ModelsPayload = {
   models: ModelOption[]
   current: string
+  /** The model used for image turns when dynamic model loading is on. */
+  vision_model?: string
+  /** True when the API will swap models per turn. */
+  dynamic?: boolean
+  /** True when the configured vision model can actually read images. */
+  vision?: boolean
   source: string
   error: string | null
 }
@@ -139,6 +200,8 @@ export type McpOverview = {
 
 export type SettingsPayload = {
   llm_model: string
+  vlm_model: string
+  dynamic_models: boolean
   tts_voice: string
   temperature: number
   /** Speak replies aloud. Persisted, so it survives a reload. */

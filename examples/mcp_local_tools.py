@@ -120,11 +120,31 @@ def system_stats() -> dict:
     import psutil
 
     memory = psutil.virtual_memory()
+    cores = psutil.cpu_count(logical=True)
+    used = round(memory.percent, 1)
+    free_mb = round(memory.available / 1_000_000)
+    os_name = f"{platform.system()} {platform.release()}"
     return {
-        "os": f"{platform.system()} {platform.release()}",
-        "cpu_cores": psutil.cpu_count(logical=True),
-        "memory_used_percent": round(memory.percent, 1),
-        "memory_available_mb": round(memory.available / 1_000_000),
+        "os": os_name,
+        "cpu_cores": cores,
+        "memory_used_percent": used,
+        "memory_available_mb": free_mb,
+        # Presentation hint for LOMA's browser UI. It is stripped from the text
+        # the model reads, and the client renders only whitelisted primitives.
+        "_loma_ui": {
+            "type": "metric",
+            "title": "This machine",
+            "subtitle": os_name,
+            "items": [
+                {"label": "CPU cores", "value": str(cores)},
+                {
+                    "label": "Memory used",
+                    "value": f"{used}%",
+                    "percent": used,
+                    "hint": f"{free_mb:,} MB free",
+                },
+            ],
+        },
     }
 
 

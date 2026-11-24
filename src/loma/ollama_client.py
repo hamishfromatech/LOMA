@@ -47,6 +47,22 @@ def human_parameters(raw: str) -> str:
     return f"{int(value)}"
 
 
+def _context_length(model_info: dict[str, Any]) -> int:
+    """The model's context ceiling, from ``<architecture>.context_length``.
+
+    Keys are architecture-prefixed (``qwen3_5.context_length``,
+    ``lfm3.context_length``), so the suffix is what we match. A model that does
+    not report one returns 0, meaning "unknown, do not clamp".
+    """
+    for key, value in model_info.items():
+        if key.endswith(".context_length"):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return 0
+    return 0
+
+
 def _voices_from_payload(payload: dict[str, Any]) -> list[str]:
     """``voices`` is a list of names, or of objects carrying ``name``/``id``."""
     found: list[str] = []
@@ -208,7 +224,15 @@ class OllamaClient:
         if cached is not None:
             return cached
 
-        empty = {"capabilities": [], "parameters": "", "family": "", "voices": [], "thinking": None}
+        empty = {
+            "capabilities": [],
+            "parameters": "",
+            "family": "",
+            "voices": [],
+            "thinking": None,
+            "context_length": 0,
+            "runner": "",
+        }
         try:
             response = self._http.post("/api/show", json={"model": model}, timeout=10)
         except httpx.HTTPError:
@@ -236,6 +260,11 @@ class OllamaClient:
             # means it may still think on its own, which is why the marker guard
             # in loma.text exists.
             "thinking": payload.get("thinking"),
+            # The model's own ceiling: "<architecture>.context_length" in
+            # ``model_info``. A per-request ``num_ctx`` above this is refused by
+            # some builds, so ModelManager clamps to it.
+            "context_length": _context_length(info),
+            "runner": details.get("runner", ""),
         }
         self._detail_cache[model] = found
         return found
@@ -247,6 +276,10 @@ class OllamaClient:
         unproven rather than filtering the model out.
         """
         return self.model_info(model)["capabilities"]
+
+    def context_length(self, model: str) -> int:
+        """The model's maximum context window, or 0 when it cannot be read."""
+        return int(self.model_info(model).get("context_length") or 0)
 
     def voices(self, model: str | None = None) -> list[str]:
         """Discover a speech model's voices.
@@ -289,21 +322,31 @@ class OllamaClient:
             )
         return []
 
-    def supports_structured_outputs(self) -> bool:
+    def supports_structured_outputs(self, model: str | None = None) -> bool:
         """Can this model be constrained to a JSON schema?
 
         Per Ollama's docs, the cloud does not support ``format``. A cloud model is
         identified by its tag rather than probed, because probing means sending a
         request that is guaranteed to fail.
         """
-        return ":cloud" not in self.settings.llm_model.lower()
+        return ":cloud" not in (model or self.settings.llm_model).lower()
 
     def unload(self, model: str) -> None:
-        """Ask Ollama to drop a model from memory now."""
+        """Ask Ollama to drop a model from memory now.
+
+        ``keep_alive: 0`` is the documented unload. The call returns once the
+        runner has been released, so a caller that swaps models can rely on the
+        memory being free before issuing the next request.
+        """
+        if not model:
+            return
         try:
             self._http.post("/api/generate", json={"model": model, "keep_alive": 0})
         except httpx.HTTPError as exc:
             log.debug("could not unload %s: %s", model, exc)
+        else:
+            # The next /api/show must not be served a stale capability answer.
+            self._detail_cache.pop(model, None)
 
     def has_model(self, name: str) -> bool:
         """True when ``name`` appears in the local model list."""
@@ -323,27 +366,36 @@ class OllamaClient:
         *,
         think: bool | str = False,
         max_tokens: int | None = None,
+        model: str | None = None,
+        num_ctx: int | None = None,
         on_usage: Callable[[dict[str, int]], None] | None = None,
         on_thinking: Callable[[str], None] | None = None,
+        on_tool_calls: Callable[[list[dict[str, Any]]], None] | None = None,
+        tools: list[dict[str, Any]] | None = None,
         response_format: dict[str, Any] | str | None = None,
     ) -> Iterator[str]:
         """Yield assistant text fragments as the model produces them.
+
+        ``model`` and ``num_ctx`` override the configured chat model for this
+        request. That is how the vision model answers an image turn without a
+        second client or a second settings object.
 
         ``on_usage`` receives Ollama's final accounting dict, which contains
         ``prompt_eval_count`` (the real size of the context we just used) and
         ``eval_count``. The agent uses that number to decide when to compact
         instead of guessing.
         """
+        model = model or self.settings.llm_model
         payload = {
-            "model": self.settings.llm_model,
+            "model": model,
             "messages": messages,
             "stream": True,
-            # Bonsai is a reasoning model. Thinking is wasted latency for a
-            # spoken reply, so it is off by default.
+            # Thinking is wasted latency for a spoken reply, so it is off by
+            # default.
             "think": think,
             "keep_alive": self.settings.keep_alive,
             "options": {
-                "num_ctx": self.settings.num_ctx,
+                "num_ctx": num_ctx or self.settings.num_ctx,
                 # Thinking tokens are billed against the same budget, so asking
                 # for reasoning has to buy room for it or the answer truncates.
                 "num_predict": (max_tokens or self.settings.max_tokens)
@@ -351,16 +403,15 @@ class OllamaClient:
                 "temperature": self.settings.temperature,
             },
         }
+        if tools:
+            payload["tools"] = tools
         if response_format is not None:
-            if self.supports_structured_outputs():
+            if self.supports_structured_outputs(model):
                 payload["format"] = response_format
             else:
                 # Ollama's cloud does not implement `format`; asking anyway fails
                 # the whole turn, so drop the constraint and keep the answer.
-                log.warning(
-                    "structured output requested for %s, which does not support it",
-                    self.settings.llm_model,
-                )
+                log.warning("structured output requested for %s, which does not support it", model)
 
         with self._http.stream("POST", "/api/chat", json=payload) as response:
             _raise_for_status(response, streamed=True)
@@ -376,6 +427,9 @@ class OllamaClient:
                 reasoning = message.get("thinking")
                 if reasoning and on_thinking is not None:
                     on_thinking(reasoning)
+                tool_calls = message.get("tool_calls")
+                if tool_calls and on_tool_calls is not None:
+                    on_tool_calls(list(tool_calls))
                 content = message.get("content")
                 if content:
                     yield content
@@ -400,9 +454,15 @@ class OllamaClient:
         *,
         think: bool = False,
         max_tokens: int | None = None,
+        model: str | None = None,
+        num_ctx: int | None = None,
     ) -> str:
         """Non-streaming convenience wrapper used by tests and benchmarks."""
-        return "".join(self.chat_stream(messages, think=think, max_tokens=max_tokens))
+        return "".join(
+            self.chat_stream(
+                messages, think=think, max_tokens=max_tokens, model=model, num_ctx=num_ctx
+            )
+        )
 
     def chat_json(
         self,
@@ -410,21 +470,24 @@ class OllamaClient:
         schema: dict[str, Any],
         *,
         max_tokens: int = 200,
+        model: str | None = None,
+        num_ctx: int | None = None,
     ) -> dict[str, Any]:
         """Constrained generation: Ollama forces the reply to match ``schema``.
 
         This is how LOMA turns a spoken sentence into tool arguments without
         asking the model to remember a JSON dialect.
         """
+        model = model or self.settings.llm_model
         payload = {
-            "model": self.settings.llm_model,
+            "model": model,
             "messages": messages,
             "stream": False,
             "think": False,
             "format": schema,
             "keep_alive": self.settings.keep_alive,
             "options": {
-                "num_ctx": self.settings.num_ctx,
+                "num_ctx": num_ctx or self.settings.num_ctx,
                 "num_predict": max_tokens,
                 "temperature": 0.0,
             },
@@ -475,9 +538,9 @@ class OllamaClient:
         return response.content
 
     # -- housekeeping ---------------------------------------------------
-    def warm_up(self) -> None:
-        """Load both models now so the first real turn feels instant."""
-        self.chat([{"role": "user", "content": "hi"}])
+    def warm_up(self, *, model: str | None = None) -> None:
+        """Load the chat and speech models now so the first turn feels instant."""
+        self.chat([{"role": "user", "content": "hi"}], model=model)
         for _ in self.speech_pcm("ready"):
             pass
 

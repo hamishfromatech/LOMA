@@ -1,23 +1,18 @@
-"""Tool selection and argument filling with Needle 3.
+"""Triage with Needle 3.
 
-Needle is a 29–121M parameter model (a 8–29 MB binary, 35 MB of weights) built
-for exactly one job: given a toolset and a sentence, return well-formed calls
-with the arguments already filled in.
+Needle is a 29–121M parameter model (an 8–29 MB binary, 35 MB of weights) built
+for on-device tool use. In LOMA it is a **classifier, not a caller**: given a
+toolset and a sentence, decide whether the turn needs tools at all and propose
+candidate tool names for a shortlist.
 
-Two properties matter here:
+That division matters now that the language model uses Ollama's native tool
+calling. The LLM reads real schemas, fills the arguments and decides whether to
+call anything; Needle's job is to keep a plain chat turn from paying for the
+toolset, and to keep a forty-tool prompt from being dumped into every request.
 
-* **The arguments are grammar-constrained.** Needle compiles a byte-level
-  grammar from the tool schemas, so a call cannot be malformed and a number
-  cannot land in a string field.
-* **It refuses.** An off-topic request returns an empty call list with a low
-  confidence, instead of inventing a tool. LOMA treats an empty list as "let the
-  language model answer".
-
-That replaces both the 1.2 GB System One router and the second LLM pass that
-used to extract arguments, cutting a full generation out of every tool turn.
-
-Tool design matters more than model choice here: see
-`docs/ARCHITECTURE.md#tool-design` for the rules that make Needle accurate.
+The old grammar-constrained argument filling is still available as
+``route()`` — it is a diagnostic for tool descriptions (`loma tools --probe`),
+not part of the live turn.
 """
 
 from __future__ import annotations
@@ -45,6 +40,22 @@ def tool_schema(tool: MCPTool, name: str) -> dict[str, Any]:
         "description": tool.description or tool.name,
         "parameters": parameters,
     }
+
+
+#: Conjunctions that separate independent actions. Deliberately narrow: this
+#: is only tried when the whole utterance failed, so a missed split costs a
+#: refusal, not a wrong call.
+_CLAUSE_SPLIT = re.compile(r"\s*(?:,\s*)?\b(?:and then|then|and)\b\s*", re.IGNORECASE)
+
+
+def split_clauses(text: str) -> list[str]:
+    """Split a compound request into actionable clauses, keeping them whole.
+
+    "roll a d20, then tell me what 17 times 24 is" -> two clauses. A clause that
+    is too short to carry an action ("and 3") is dropped rather than routed.
+    """
+    parts = [part.strip(" ,.;") for part in _CLAUSE_SPLIT.split(text)]
+    return [part for part in parts if len(part.split()) >= 2]
 
 
 @dataclass(slots=True)
@@ -86,6 +97,34 @@ class ToolRoute:
             "reasoning": self.reasoning,
             "refused": self.refused,
             "suppressed": self.suppressed,
+            "reason": self.reason,
+        }
+
+
+@dataclass(slots=True)
+class ToolTriage:
+    """Needle's one job now: should this turn offer tools at all?
+
+    It is a classifier, not a caller. It proposes tool *names* so the turn can
+    be shortlisted, but the language model fills the arguments and decides
+    whether to call anything. A missed tool is expensive, so the gate is
+    recall-oriented: any plausible candidate lets the schemas through.
+    """
+
+    needs_tools: bool = False
+    candidates: list[str] = field(default_factory=list)
+    confidence: float = 0.0
+    reasoning: str = ""
+    latency_s: float = 0.0
+    reason: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "needs_tools": self.needs_tools,
+            "candidates": list(self.candidates),
+            "confidence": round(self.confidence, 4),
+            "latency_s": round(self.latency_s, 4),
+            "reasoning": self.reasoning,
             "reason": self.reason,
         }
 
@@ -162,12 +201,104 @@ class NeedleRouter:
 
     # -- routing -------------------------------------------------------
     def route(self, text: str) -> ToolRoute:
-        """Pick tools for ``text``. Never raises."""
+        """Diagnostic route with arguments, for `loma tools --probe`.
+
+        The live pipeline no longer executes this: the language model calls the
+        tools. It remains useful for measuring whether a toolset is well
+        described, and for the legacy confidence floor.
+        """
         text = text.strip()
         started = time.perf_counter()
         if not text or self._agent is None:
-            return ToolRoute(latency_s=time.perf_counter() - started, reason="router not loaded")
+            return ToolRoute(
+                latency_s=time.perf_counter() - started,
+                reason="router not loaded",
+            )
+        route = self._route_with_fallback(
+            text, floor=self.settings.tool_min_confidence
+        )
+        route.latency_s = time.perf_counter() - started
+        return route
 
+    def classify(self, text: str) -> ToolTriage:
+        """Triage: does this turn need tools, and roughly which ones?
+
+        Never raises. The floor is deliberately lower than the execution floor
+        used above: the LLM is the arbiter now, and this exists to skip the
+        obvious non-tool turns and to shortlist when Needle is confident.
+        """
+        started = time.perf_counter()
+        text = text.strip()
+        if not text or self._agent is None:
+            return ToolTriage(
+                latency_s=time.perf_counter() - started,
+                reason="router not loaded",
+            )
+
+        route = self._route_with_fallback(
+            text, floor=self.settings.triage_min_confidence
+        )
+        candidates: list[str] = []
+        for request in route.requests:
+            if request.tool.name not in candidates:
+                candidates.append(request.tool.name)
+
+        # A suppressed call is a strong recall signal: Needle recognised the
+        # action but could not fill a required argument ("roll a die" and a
+        # `sides` parameter). The schema must reach the model so it can fill it.
+        needs_tools = bool(candidates) or route.suppressed > 0
+        return ToolTriage(
+            needs_tools=needs_tools,
+            candidates=candidates,
+            confidence=route.confidence,
+            reasoning=route.reasoning,
+            latency_s=time.perf_counter() - started,
+            reason=route.reason,
+        )
+
+    def _route_with_fallback(self, text: str, *, floor: float) -> ToolRoute:
+        """Route the whole utterance, then each clause if nothing cleared.
+
+        A compound request ("roll a d20, then tell me what 17 times 24 is")
+        often scores below the floor as one sentence and cleanly as two. The
+        whole-utterance result wins whenever it exists, so a working single
+        request is never split.
+        """
+        whole = self._route_once(text, floor=floor)
+        clauses = split_clauses(text)
+        if whole.has_calls or len(clauses) < 2:
+            return whole
+
+        merged: list[ToolRequest] = []
+        confidences: list[float] = []
+        reasons: list[str] = []
+        for clause in clauses:
+            routed = self._route_once(clause, floor=floor)
+            if routed.has_calls:
+                merged.extend(routed.requests)
+                confidences.append(routed.confidence)
+                reasons.append(routed.reasoning)
+            elif routed.reasoning:
+                reasons.append(routed.reasoning)
+
+        if not merged:
+            return whole
+
+        log.info(
+            "compound request: %d clause(s) routed (%s)",
+            len(confidences),
+            ", ".join(request.tool.name for request in merged),
+        )
+        return ToolRoute(
+            requests=merged,
+            confidence=min(confidences),
+            reasoning="; ".join(reason for reason in reasons if reason),
+            refused=False,
+        )
+
+    def _route_once(self, text: str, *, floor: float | None = None) -> ToolRoute:
+        """One Needle call, with its own confidence and argument validation."""
+        started = time.perf_counter()
         try:
             with self._lock:
                 # Each utterance is independent. Needle is multi-turn, and
@@ -198,7 +329,7 @@ class NeedleRouter:
                 reason="needle refused (no tool fits)",
             )
 
-        floor = self.settings.tool_min_confidence
+        floor = self.settings.tool_min_confidence if floor is None else floor
         if confidence < floor:
             return ToolRoute(
                 confidence=confidence,
@@ -213,7 +344,7 @@ class NeedleRouter:
             name = str(call.get("name") or "")
             tool = self._names.get(name)
             if tool is None:
-                log.warning("Needle returned unknown tool %r", name)
+                log.warning("Needle returned unknown tool %s", name)
                 continue
             arguments = dict(call.get("arguments") or {})
             arguments = self._coerce(tool, arguments)

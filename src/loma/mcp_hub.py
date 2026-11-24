@@ -5,10 +5,9 @@ than colour the whole codebase ``async``, this module owns one private event
 loop on a background thread and submits coroutines to it. Startup, tool
 listing and tool calls all go through that loop.
 
-The important property for a small model: **tool schemas never enter the LLM
-prompt wholesale.** The hub hands the router a name + one-line description per
-tool. Only the single chosen tool's schema is ever shown to the model, and
-only to extract its arguments.
+Tool schemas reach the language model only on a turn the triage classifier says
+may need them, and only for the shortlisted tools. The model calls them with
+Ollama's native tool calling; the hub executes the call and returns the text.
 """
 
 from __future__ import annotations
@@ -17,6 +16,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import threading
 from concurrent.futures import TimeoutError as FutureTimeout
@@ -132,6 +132,82 @@ class ToolBatch:
                 for call in self.calls
             ]
         }
+
+
+_SAFE_TOOL_NAME = re.compile(r"[^A-Za-z0-9_-]")
+
+
+def ollama_tool_specs(tools: list[MCPTool]) -> tuple[list[dict[str, Any]], dict[str, MCPTool]]:
+    """The ``tools`` array Ollama's /api/chat expects, plus a name map.
+
+    The model fills the arguments; the schema is the contract it reads. Names
+    are sanitised because a function name may only contain letters, digits,
+    underscores and hyphens, and the map is what turns the model's answer back
+    into the MCP tool it names.
+    """
+    specs: list[dict[str, Any]] = []
+    mapping: dict[str, MCPTool] = {}
+    for tool in tools:
+        safe = _SAFE_TOOL_NAME.sub("_", tool.name) or "tool"
+        while safe in mapping:
+            safe = f"{safe}_"
+        mapping[safe] = tool
+        specs.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": safe,
+                    "description": tool.description or tool.name,
+                    "parameters": tool.input_schema
+                    or {"type": "object", "properties": {}},
+                },
+            }
+        )
+    return specs, mapping
+
+
+def _one_line(text: str, limit: int) -> str:
+    """Collapse whitespace and trim a description at a word boundary."""
+    text = " ".join((text or "").split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0].rstrip(".,;:")
+    return f"{cut}…"
+
+
+def tool_index(
+    tools: list[MCPTool],
+    *,
+    max_chars: int = 1200,
+    max_description: int = 140,
+) -> str:
+    """A compact capability index for the language model — not a schema.
+
+    This carries a name and one line of prose per tool. It contains no
+    parameter names, types, defaults or JSON, so the property that matters is
+    preserved: the LLM is never asked to construct a call. It is injected only
+    for a capability question ("what can you do?"), so an ordinary turn pays
+    nothing and a small model has no list to narrate.
+
+    The router, not the LLM, is still the thing that decides when a tool runs.
+    """
+    if not tools:
+        return ""
+
+    header = (
+        "These are your own capabilities; never claim you have no tools. If the "
+        "user asks what you can do, describe them in plain speech."
+    )
+    lines = [header]
+    used = len(header)
+    for tool in tools:
+        description = _one_line(tool.description or "", max_description)
+        line = f"- {tool.name}: {description}" if description else f"- {tool.name}"
+        if used + 1 + len(line) > max_chars:
+            break
+        lines.append(line)
+        used += 1 + len(line)
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -369,7 +445,14 @@ def _readable(result: str) -> str:
         return text
 
     if isinstance(data, dict):
-        return "; ".join(f"{key}={_scalar(value)}" for key, value in data.items())
+        # A UI hint is for the browser, not the model. It is a presentation spec
+        # and would only add noise (and tokens) to the tool result.
+        pairs = [
+            f"{key}={_scalar(value)}"
+            for key, value in data.items()
+            if key not in {"ui", "_loma_ui"}
+        ]
+        return "; ".join(pairs) or "done"
     if isinstance(data, list):
         return ", ".join(_scalar(value) for value in data)
     return _scalar(data)

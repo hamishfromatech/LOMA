@@ -17,7 +17,7 @@ class FakeClient:
             on_usage({"prompt_tokens": self.prompt_tokens, "completion_tokens": 5})
         yield "ok"
 
-    def chat(self, messages, *, think=False, max_tokens=None):
+    def chat(self, messages, *, think=False, max_tokens=None, **_):
         self.summarise_calls.append(messages)
         return self.summary
 
@@ -98,7 +98,7 @@ def test_compaction_can_be_disabled():
 
 def test_failed_summary_falls_back_to_dropping_old_turns():
     class BrokenSummary(FakeClient):
-        def chat(self, messages, *, think=False, max_tokens=None):
+        def chat(self, messages, *, think=False, max_tokens=None, **_):
             from loma.ollama_client import OllamaError
 
             raise OllamaError("nope")

@@ -8,27 +8,11 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible"
-import { Tool, type ToolPart } from "@/components/ui/tool"
+import { ToolResultCard } from "@/components/tool-cards"
 import { cn } from "@/lib/utils"
-import type { ChatMessage, ToolCallView, TurnMetrics as Metrics } from "@/lib/types"
+import type { ChatMessage, TurnMetrics as Metrics } from "@/lib/types"
 import { Check, ChevronRight, Copy, Brain, TriangleAlert } from "lucide-react"
 import { useCallback, useState } from "react"
-
-function toToolPart(tool: ToolCallView): ToolPart {
-  return {
-    type: tool.name,
-    state:
-      tool.status === "running"
-        ? "input-available"
-        : tool.status === "error"
-          ? "output-error"
-          : "output-available",
-    input: tool.arguments,
-    output: tool.result ? { result: tool.result } : undefined,
-    toolCallId: tool.id,
-    errorText: tool.error ? tool.result : undefined,
-  }
-}
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
@@ -71,6 +55,7 @@ function Trace({ metrics, intent, matched }: { metrics: Metrics; intent?: string
       <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down">
         <div className="mt-2 space-y-1 rounded-lg border border-loma-line-soft bg-black/20 px-3 py-2 font-mono text-[10.5px]">
           <div className="flex flex-wrap gap-x-4 gap-y-1">
+            {metrics.model && <Stat label="model" value={metrics.model} />}
             <Stat label="route" value={`${metrics.routeMs.toFixed(2)} ms`} />
             {metrics.toolMs > 0 && <Stat label="tool" value={`${Math.round(metrics.toolMs)} ms`} />}
             <Stat label="first token" value={`${metrics.firstTokenS.toFixed(2)} s`} />
@@ -107,7 +92,7 @@ export function AnswerMessage({ message }: { message: ChatMessage }) {
 
       <div className="min-w-0 flex-1 space-y-2.5">
         {message.tools.map((tool) => (
-          <Tool key={tool.id} toolPart={toToolPart(tool)} />
+          <ToolResultCard key={tool.id} tool={tool} />
         ))}
 
         {thinking && (

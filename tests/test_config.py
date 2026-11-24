@@ -5,7 +5,10 @@ from loma.config import Settings
 
 def test_defaults_match_the_documented_budget():
     settings = Settings()
-    assert settings.llm_model == "qwen3.5:0.8b"
+    assert settings.llm_model == "lfm3:latest"
+    # Images switch to a second model, and the text model is unloaded first.
+    assert settings.vlm_model == "lfm3-vl:2b"
+    assert settings.dynamic_models is True
     assert settings.tts_model == "phonon"
     assert settings.stt_model == "tiny"
     assert settings.stt_compute_type == "int8"
@@ -35,7 +38,16 @@ def test_env_overrides(monkeypatch, tmp_path):
 def test_blank_env_falls_back_to_default(monkeypatch, tmp_path):
     monkeypatch.setenv("LOMA_PREFS", str(tmp_path / "prefs.json"))
     monkeypatch.setenv("LOMA_LLM_MODEL", "   ")
-    assert Settings.from_env().llm_model == "qwen3.5:0.8b"
+    assert Settings.from_env().llm_model == "lfm3:latest"
+
+
+def test_vision_model_and_swap_flag_come_from_the_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOMA_PREFS", str(tmp_path / "prefs.json"))
+    monkeypatch.setenv("LOMA_VLM_MODEL", "some-vl:2b")
+    monkeypatch.setenv("LOMA_DYNAMIC_MODELS", "false")
+    settings = Settings.from_env()
+    assert settings.vlm_model == "some-vl:2b"
+    assert settings.dynamic_models is False
 
 
 def test_with_returns_a_modified_copy():

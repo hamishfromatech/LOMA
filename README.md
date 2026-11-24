@@ -7,19 +7,25 @@ By [hamishfromatech](https://github.com/hamishfromatech)
 ![LOMA — a small assistant on a desk at night, glowing teal, with an unplugged network cable](docs/assets/loma-cover.png)
 
 A complete voice assistant that runs on your own machine with **no network
-access at runtime**, on a **128k context window**, in about **1.7 GB of RAM** —
+access at runtime**, on a **128k context window**, in about **2.4 GB of RAM** —
 with a chat UI, persistent conversations, MCP tools and a long-term memory kept
 in plain Markdown.
 
 It listens through your microphone, transcribes on CPU, routes with a
 deterministic lexicon and a 35 MB tool-calling model, optionally calls a real
-tool over MCP, answers with a 0.8B language model, and speaks the reply out loud.
+tool over MCP, answers with a 1.7B language model — or a 2B vision model when
+there is an image — and speaks the reply out loud.
 
 ```
-you ──► faster-whisper ──► control lexicon ──► Needle 3 ──► qwen3.5 ──► phonon ──► you
-         (ears)            stop / reset /       (which tool,   (words)     (mouth)
-                           remember / exit       which args)
+you ──► faster-whisper ──► control lexicon ──► Needle 3 ──► lfm3 ─────► phonon ──► you
+         (ears)            stop / reset /       (tools or not) (words)     (mouth)
+                           remember / exit            │             ▲
+                                                tool schemas      lfm3-vl
+                                              (only when needed) (for images)
 ```
+
+Only one chat model is resident at a time: Ollama loads the text model or the
+vision model per turn and unloads the other with `keep_alive: 0`.
 
 ---
 
@@ -28,32 +34,88 @@ you ──► faster-whisper ──► control lexicon ──► Needle 3 ──
 | Problem | What LOMA does |
 |---|---|
 | Control words must never be misheard | **"Stop", "start over", "say that again", "remember that…"** are matched by a lexicon, not a model. 22 µs, zero RAM, no misreads — a 0.8B decision model got "stop" vs "exit" wrong 48% of the time |
-| Tool schemas blow up the prompt | **Needle 3** (35 MB) picks the tool and fills the arguments with a grammar-constrained decoder. No tool schema reaches the LLM, and there is no second LLM pass to extract arguments |
+| Tool schemas shouldn't sit in every prompt | **Needle 3** (35 MB) is a **triage classifier**: it decides whether a turn needs tools and shortlists them. The model then calls them with Ollama's native tool calling, so schemas reach the prompt only when they can be used. "What tools do you have?" is answered from the live tool list, without a model |
 | Conversations outgrow the window | **Auto-compaction** folds old turns into a summary, driven by Ollama's real `prompt_eval_count`, and caps *live* tokens at 8k |
 | Assistants forget you between chats | **Long-term memory in `MEMORY.md`** — a Markdown file LOMA reads every turn and appends to when it learns something durable |
 | Voice agents feel laggy | Sentences are spoken **while the model is still writing**, and the browser plays them as they arrive |
+| Two models do not fit in memory | **One chat model resident** — the text model (`lfm3`) and the vision model (`lfm3-vl`) swap through Ollama's `keep_alive` instead of sharing RAM/VRAM |
 
 ---
 
 ## The RAM budget, measured
 
-On an 8 GB Apple M2, with a 128k context window:
+On a 32 GB Apple M2 Max, with a 256k window configured (128k is the floor),
+using `loma bench --swap --json`:
+
+| Phase | Model resident | Ollama | Python + children | Total |
+|---|---|---|---|---|
+| Text turn | `lfm3:latest` 1.68 GB + `phonon` 0.12 GB | 1795 MB | ~640 MB | **~2440 MB** |
+| Image turn (after swap) | `lfm3-vl:2b` 1.74 GB + `phonon` 0.12 GB | 1861 MB | ~640 MB | **~2500 MB** |
 
 | Stage | Model | RAM |
 |---|---|---|
 | Ears | faster-whisper `tiny`, int8, CPU | ~80 MB |
 | Control | deterministic lexicon | 0 MB |
 | Tools | Needle 3 (35 MB weights + engine) | ~45 MB |
-| LLM | `qwen3.5:0.8b`, 131072 ctx (MLX) | 1493 MB |
-| Mouth | `phonon` (31M) | 121 MB |
-| Orchestration | Python + numpy | 77 MB |
-| **Total** | | **1692 MB** |
+| Chat (text) | `lfm3:latest`, 262144 ctx (MLX, nvfp4) | 1676 MB |
+| Chat (images) | `lfm3-vl:2b`, 128000 ctx (MLX, nvfp4) | 1741 MB |
+| Mouth | `phonon` (31M) | 120 MB |
+| Orchestration | Python + faster-whisper runtime + MCP child | ~635 MB |
 
+Both chat models resident would be **3531 MB of Ollama alone**; swapping keeps
+the peak near **1.8 GB**. The measured total stays inside the 3 GB budget.
 What LOMA asks of a model, what Ollama actually reports, and the capabilities that
 were measured and rejected: [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md).
 
 Full detail on memory, including how to re-measure: [`docs/RAM_BUDGET.md`](docs/RAM_BUDGET.md).
-On a machine with **more than 8 GB**, the window becomes **256k** automatically.
+On a machine with **more than 8 GB**, the window becomes **256k** automatically —
+clamped to what the model itself reports (`262144` for `lfm3`, `128000` for
+`lfm3-vl`).
+
+---
+
+## Two chat models, one resident
+
+`lfm3` writes the answers. `lfm3-vl` reads images. They are never both loaded.
+
+```
+no image  ──►  lfm3:latest    ── keep_alive=30m ──► stays hot for the next turn
+image     ──►  lfm3-vl:2b     ── keep_alive=30m ──► stays hot for the next image
+                │
+                └─ the other model is sent keep_alive=0 first
+```
+
+The decision lives in `model_manager.py` and runs *after* the control lexicon and
+the tool router, so "stop" and a tool-only turn never pay a cold load:
+
+| Turn | Model | What happens |
+|---|---|---|
+| text | `llm_model` | if the VLM is resident, unload it; send the turn |
+| image | `vlm_model` | if the LLM is resident, unload it; send the turn with the image |
+| text again | `llm_model` | swap back; the image is **not** resent (images are one-shot) |
+
+Ollama's `keep_alive` is the whole mechanism. LOMA sends `keep_alive=30m` with
+the request it wants and `keep_alive=0` for the model it wants gone; Ollama does
+the loading, eviction and runner management. The unload call returns only after
+the model has been released, so the next request starts with the memory free.
+
+Measured swap cost on an M2 Max: the unload is ~1 ms, and the cold load shows up
+as the next turn's first token — 1.22 s for the vision model versus 0.27 s for an
+already-warm text turn.
+
+Knobs:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `LOMA_LLM_MODEL` | `lfm3:latest` | the text model |
+| `LOMA_VLM_MODEL` | `lfm3-vl:2b` | the image model |
+| `LOMA_DYNAMIC_MODELS` | `true` | swap per turn; `false` leaves one model for everything |
+| `LOMA_KEEP_ALIVE` | `30m` | how long the active model stays resident; `0` unloads after every turn |
+| `OLLAMA_MAX_LOADED_MODELS` | Ollama default | set to `1` to make Ollama itself refuse a second model |
+
+`loma models` shows what is actually resident (`/api/ps`). `loma bench --swap`
+proves the policy end to end: a text turn, an image turn, and a text turn again,
+with the memory footprint after each.
 
 ---
 
@@ -68,8 +130,9 @@ cd LOMA
 ./scripts/setup.sh
 ```
 
-The setup script creates a virtualenv, installs LOMA, pulls the two Ollama
-models, and caches Whisper's weights and Needle's engine locally.
+The setup script creates a virtualenv, installs LOMA, pulls the three Ollama
+models (`lfm3`, `lfm3-vl`, `phonon`), and caches Whisper's weights and Needle's
+engine locally.
 
 ### The web app
 
@@ -221,7 +284,53 @@ matter most:
 - **One tool per action.** `roll_dice(sides, count)` swapped its two numbers;
   `roll_die(sides)` is right every time.
 - **Document the arguments.** FastMCP only emits parameter descriptions when the
-  docstring has an `Args:` section, and Needle reads those.
+  docstring has an `Args:` section, and both Needle and the tool-calling model
+  read those.
+
+Two names share the work. **Needle** opens or closes the door: if it sees no
+plausible tool (and no suppressed call), the turn is answered with no toolset at
+all; otherwise every schema is offered. Shortlisting to Needle's candidates is
+opt-in (`LOMA_TOOL_SHORTLIST=true`) because a wrong shortlist is how you get a
+made-up answer: the model cannot call the tool it was not shown. **The language
+model** does the call: it reads the schemas, fills the arguments and may chain up
+to `LOMA_TOOL_ROUNDS` calls. The reported confidence is Needle's triage score,
+not a per-call guarantee.
+
+Compound requests are why triage is recall-oriented. "Roll a d20, then tell me
+17 times 24" often scores below the old execution floor as one sentence, so the
+router tries each clause when the whole fails and merges the candidates.
+
+### Tool results are rendered, not dumped
+
+The tool card is not a JSON blob. `web/components/tool-cards.tsx` gives each
+demo tool a component — a die, a clock, an expression/result, a memory bar — and
+any MCP tool can ask for a declarative card instead:
+
+```json
+{"os": "Darwin 25.5.0", "cpu_cores": 12,
+ "ui": {"type": "metric", "title": "This machine",
+        "items": [{"label": "CPU cores", "value": "12"},
+                  {"label": "Memory used", "value": "62.3%", "percent": 62.3}]}}
+```
+
+Supported primitives are `metric`, `keyvalue`, `table`, `list`, `code` and
+`progress`. `web/lib/tool-ui.ts` validates and caps the spec (12 items, 20 rows,
+240 characters), and only those types are rendered: a tool cannot inject HTML,
+CSS, a URL or a script. The `ui` key is stripped from the text the model reads,
+so presentation costs no context.
+
+The lifecycle (running → done → error) and the name→component registry follow
+the generative-UI pattern from the [Vercel AI SDK](https://ai-sdk.dev)
+(`message.parts` → `tool-*` components) and
+[CopilotKit](https://www.copilotkit.ai) (`useFrontendTool({ render })`); LOMA
+keeps its own SSE transport and adds the declarative fallback for tools it has
+never seen.
+
+One more piece of state survives a turn: the **names and arguments** of the last
+turn's tool calls, on the assistant message as `tool_trace`. They are replayed
+on the next turn as an empty-result tool protocol. Results are never stored.
+Without that replay, `lfm3` answered "what time is it?" from memory after a
+roll-die turn — 5 times out of 5; with it, it calls `get_current_time`.
 
 ---
 
@@ -324,7 +433,7 @@ Compaction fires on Ollama's real `prompt_eval_count`, not a character guess.
 | `loma transcribe file.wav` | Speech to text only |
 | `loma speak "hello"` | Text to speech only |
 | `loma doctor` | Check every dependency |
-| `loma bench` | Measure latency and RAM |
+| `loma bench [--swap]` | Measure latency and RAM; `--swap` adds an image turn that proves the model swap |
 | `loma models` | What is loaded in memory |
 | `loma devices` | Audio devices |
 
@@ -340,11 +449,12 @@ src/loma/
   stt.py             faster-whisper wrapper
   audio.py           microphone, VAD, speaker thread
   control.py         deterministic stop/reset/repeat/remember/exit lexicon
-  tool_router.py     Needle 3 tool selection + argument filling
+  tool_router.py     Needle 3 triage (tools or not) + a diagnostic route
   mcp_hub.py         FastMCP client bridge (sync over async)
   agent.py           conversation state + auto-compaction
   pipeline.py        the end-to-end turn, as an event stream
   conversations.py   chat history on disk
+  model_manager.py   text/vision model swap via Ollama keep_alive
   memory_store.py    MEMORY.md
   preferences.py     what the Settings page persists
   memory.py          RAM accounting
@@ -408,9 +518,11 @@ code path that answers a turn — add an event instead.
 2. **Control words never touch a model.** `control.py` is a deterministic lexicon.
 Don't "improve" it by asking the LLM. The 0.8B model misread `stop` vs `exit`
 48% of the time, which is why the lexicon exists.
-3. **Tool schemas never reach the LLM.** `tool_router.py` has Needle pick the tool
-and fill arguments with a grammar-constrained decoder. Adding a tool must not
-add anything to the language-model prompt.
+3. **Needle triages; the LLM calls.** `tool_router.py` answers "does this turn
+need tools, and roughly which?"; the chat model fills the arguments and calls
+them with Ollama's native tool calling. Never put a tool schema in a plain chat
+turn, and never execute a call the triage gate did not clear — that gate is what
+keeps a forty-tool install from taxing every "hello".
 4. **Compaction is driven by `prompt_eval_count`**, the real tokenizer count
 Ollama returns. Never reintroduce a character-based estimate.
 5. **Memory is a file.** `data/memory/MEMORY.md` is read every turn and appended

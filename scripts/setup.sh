@@ -11,7 +11,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PYTHON="${PYTHON:-python3}"
-LLM_MODEL="${LOMA_LLM_MODEL:-qwen3.5:0.8b}"
+LLM_MODEL="${LOMA_LLM_MODEL:-lfm3:latest}"
+VLM_MODEL="${LOMA_VLM_MODEL:-lfm3-vl:2b}"
 TTS_MODEL="${LOMA_TTS_MODEL:-phonon}"
 
 echo "==> Checking prerequisites"
@@ -30,7 +31,7 @@ echo "==> Creating virtual environment (.venv)"
 
 echo
 echo "==> Pulling Ollama models"
-for model in "$LLM_MODEL" "$TTS_MODEL"; do
+for model in "$LLM_MODEL" "$VLM_MODEL" "$TTS_MODEL"; do
   echo "  - $model"
   ollama pull "$model"
 done

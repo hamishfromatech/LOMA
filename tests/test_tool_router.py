@@ -266,3 +266,156 @@ def test_route_serialises_for_the_cli(monkeypatch):
     data = router.route("roll two").as_dict()
     assert data["confidence"] == 0.8
     assert data["tools"][0]["tool"] == "roll_dice"
+
+
+# ---------------------------------------------------------------------------
+# Compound requests
+# ---------------------------------------------------------------------------
+
+
+class KeyedAgent:
+    """Returns a different Needle payload per utterance."""
+
+    def __init__(self, responses):
+        self.responses = responses
+        self.queries: list[str] = []
+
+    def reset(self):
+        pass
+
+    def complete(self, text):
+        self.queries.append(text)
+        return self.responses.get(text, payload([], confidence=0.0))
+
+
+def compound_router():
+    router = NeedleRouter(Settings(tool_min_confidence=0.5))
+    router._names = {
+        "roll_die": make_tool(
+            name="roll_die",
+            properties={"sides": {"type": "integer"}},
+            required=(),
+            description="Roll a die.",
+        ),
+        "calculate": make_tool(
+            name="calculate",
+            properties={"expression": {"type": "string"}},
+            required=("expression",),
+            description="Evaluate arithmetic.",
+        ),
+    }
+    return router
+
+
+def test_a_compound_request_is_retried_clause_by_clause():
+    router = compound_router()
+    whole = "Roll a d20, then tell me what 17 times 24 is."
+    router._agent = KeyedAgent(
+        {
+            whole: payload([], confidence=0.05),
+            "Roll a d20": payload(
+                [{"name": "roll_die", "arguments": {"sides": 20}}], confidence=0.66
+            ),
+            "tell me what 17 times 24 is": payload(
+                [{"name": "calculate", "arguments": {"expression": "17 * 24"}}],
+                confidence=0.79,
+            ),
+        }
+    )
+
+    route = router.route(whole)
+
+    assert route.names == ["roll_die", "calculate"]
+    # The weakest accepted clause, not an average that hides a weak one.
+    assert route.confidence == 0.66
+
+
+def test_a_whole_utterance_that_works_is_not_split():
+    router = compound_router()
+    whole = "Roll a d20 and tell me the time."
+    agent = KeyedAgent(
+        {whole: payload([{"name": "roll_die", "arguments": {"sides": 20}}], confidence=0.9)}
+    )
+    router._agent = agent
+
+    route = router.route(whole)
+
+    assert route.names == ["roll_die"]
+    assert agent.queries == [whole]
+
+
+def test_clauses_that_all_fail_keep_the_original_refusal():
+    router = compound_router()
+    whole = "Tell me a joke and sing a song."
+    router._agent = KeyedAgent({whole: payload([], confidence=0.03)})
+
+    route = router.route(whole)
+
+    assert not route.has_calls
+
+
+# ---------------------------------------------------------------------------
+# Triage — Needle classifies, the LLM calls
+# ---------------------------------------------------------------------------
+
+
+def test_classify_keeps_candidates_below_the_execution_floor(monkeypatch):
+    """0.2 is too weak to execute, but enough to hand the schemas to the LLM."""
+    install(monkeypatch, payload(
+        calls=[{"name": "roll_die", "arguments": {}}], confidence=0.2
+    ))
+    router = NeedleRouter(Settings(tool_min_confidence=0.5, triage_min_confidence=0.1))
+    router.load([make_tool(name="roll_die", properties={}, required=())])
+
+    triage = router.classify("roll a die")
+
+    assert triage.needs_tools is True
+    assert triage.candidates == ["roll_die"]
+    # The diagnostic execution route still refuses it.
+    assert not router.route("roll a die").has_calls
+
+
+def test_a_suppressed_call_still_offers_the_schemas(monkeypatch):
+    """Needle wanted roll_die but could not fill `sides`; the model must see it."""
+    install(monkeypatch, payload(calls=[], suppressed=[{"name": "roll_die"}], confidence=0.05))
+    router = NeedleRouter(Settings())
+    router.load([make_tool(name="roll_die", properties={}, required=())])
+
+    triage = router.classify("roll a die")
+
+    assert triage.needs_tools is True
+    # No candidate name is known, so the pipeline will offer every schema.
+    assert triage.candidates == []
+
+
+def test_classify_says_no_when_needle_refuses(monkeypatch):
+    install(monkeypatch, payload(calls=[], confidence=0.03))
+    router = NeedleRouter(Settings(triage_min_confidence=0.0))
+    router.load([make_tool(name="roll_die", properties={}, required=())])
+
+    triage = router.classify("tell me a joke")
+
+    assert triage.needs_tools is False
+    assert triage.candidates == []
+
+
+def test_classify_merges_compound_clauses():
+    router = compound_router()
+    whole = "Roll a d20, then tell me what 17 times 24 is."
+    router._agent = KeyedAgent(
+        {
+            whole: payload([], confidence=0.02),
+            "Roll a d20": payload(
+                [{"name": "roll_die", "arguments": {"sides": 20}}], confidence=0.2
+            ),
+            "tell me what 17 times 24 is": payload(
+                [{"name": "calculate", "arguments": {"expression": "17 * 24"}}],
+                confidence=0.25,
+            ),
+        }
+    )
+
+    triage = router.classify(whole)
+
+    assert triage.needs_tools is True
+    assert triage.candidates == ["roll_die", "calculate"]

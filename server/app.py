@@ -199,6 +199,7 @@ def create_app() -> Flask:
         try:
             updated = get_runtime().update_settings(
                 llm_model=payload.get("llm_model"),
+                vlm_model=payload.get("vlm_model"),
                 tts_voice=payload.get("tts_voice"),
                 temperature=payload.get("temperature"),
                 speak_replies=payload.get("speak_replies"),

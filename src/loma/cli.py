@@ -135,6 +135,11 @@ def build_parser() -> argparse.ArgumentParser:
     # bench -----------------------------------------------------------
     bench = sub.add_parser("bench", help="measure latency and RAM")
     bench.add_argument("--turns", type=int, default=3)
+    bench.add_argument(
+        "--swap",
+        action="store_true",
+        help="also run an image turn, proving the text/vision model swap",
+    )
     bench.add_argument("--json", action="store_true")
     bench.add_argument("--allow-over-budget", action="store_true")
 
@@ -212,6 +217,9 @@ def _route_payload(text: str, settings: Settings, *, with_tools: bool) -> dict:
     router = NeedleRouter(settings)
     try:
         if hub.start() and router.load(hub.tools):
+            # The live decision is triage; the argument-filling route is kept
+            # beside it as a diagnostic for tool descriptions.
+            payload["triage"] = router.classify(text).as_dict()
             payload["tools"] = router.route(text).as_dict()
         else:
             payload["tools"] = {"error": hub.last_error or router.last_error}
@@ -236,23 +244,26 @@ def cmd_route(args, settings: Settings) -> int:
         print(f"matched : {control['matched']!r}")
 
     tool_info = payload.get("tools")
+    triage = payload.get("triage")
     if tool_info:
         print()
         if "error" in tool_info:
-            print(f"tools   : unavailable ({tool_info['error']})")
-        elif tool_info["tools"]:
+            print(f"triage  : unavailable ({tool_info['error']})")
+            return 0
+        if triage:
+            decision = "tools" if triage["needs_tools"] else "answer (no tool)"
+            shortlist = ", ".join(triage["candidates"]) or "-"
+            print(f"triage  : {decision}  [{shortlist}]")
+            print(f"needle  : confidence {triage['confidence']:.2f} "
+                  f"in {triage['latency_s'] * 1000:.0f} ms "
+                  f"(floor {settings.triage_min_confidence:.2f})")
+            if triage.get("reasoning"):
+                print(f"why     : {triage['reasoning']}")
+        if tool_info["tools"]:
             calls = ", ".join(
                 f"{c['tool']}({c['arguments']})" for c in tool_info["tools"]
             )
-            print(f"tools   : {calls}")
-            print(f"needle  : confidence {tool_info['confidence']:.2f} "
-                  f"in {tool_info['latency_s'] * 1000:.0f} ms")
-            if tool_info.get("reasoning"):
-                print(f"why     : {tool_info['reasoning']}")
-        else:
-            print(f"tools   : none  ({tool_info['reason']})")
-            print(f"needle  : confidence {tool_info['confidence']:.2f} "
-                  f"in {tool_info['latency_s'] * 1000:.0f} ms")
+            print(f"probe   : {calls}   (diagnostic arg filling)")
     return 0
 
 
@@ -276,23 +287,28 @@ def cmd_tools(args, settings: Settings) -> int:
             if not router.load(hub.tools):
                 print(f"Needle could not start: {router.last_error}", file=sys.stderr)
                 return 1
+            triage = router.classify(args.probe)
             route = router.route(args.probe)
             if args.json:
-                print(json.dumps(route.as_dict(), indent=2))
+                print(json.dumps(
+                    {"triage": triage.as_dict(), "probe": route.as_dict()},
+                    indent=2,
+                ))
                 return 0
             print(f"probe   : {args.probe}")
+            decision = "tools" if triage.needs_tools else "answer (no tool)"
+            print(f"triage  : {decision}")
+            if triage.candidates:
+                print(f"candidates: {', '.join(triage.candidates)}")
+            print(f"needle  : confidence {triage.confidence:.2f} "
+                  f"in {triage.latency_s * 1000:.0f} ms "
+                  f"(floor {settings.triage_min_confidence:.2f})")
+            if triage.reasoning:
+                print(f"why     : {triage.reasoning}")
             if route.requests:
+                print("probe   : the model will fill these arguments; diagnostic route:")
                 for request in route.requests:
-                    print(f"tool    : {request.tool.name}")
-                    print(f"args    : {request.arguments}")
-            else:
-                print(f"tool    : none  ({route.reason})")
-            print(f"needle  : confidence {route.confidence:.2f} "
-                  f"in {route.latency_s * 1000:.0f} ms")
-            if route.reasoning:
-                print(f"why     : {route.reasoning}")
-            if route.suppressed:
-                print(f"held    : {route.suppressed} call(s) below the confidence floor")
+                    print(f"          {request.tool.name}({request.arguments})")
             return 0
 
         if args.json:
@@ -456,6 +472,8 @@ def cmd_doctor(args, settings: Settings) -> int:
             checks.append(("Ollama reachable", True, f"v{version} at {settings.ollama_host}"))
 
             required = [settings.llm_model, settings.tts_model]
+            if settings.dynamic_models and settings.vlm_model not in required:
+                required.append(settings.vlm_model)
             missing = []
             for name in required:
                 present = client.has_model(name)
@@ -591,6 +609,36 @@ def cmd_models(args, settings: Settings) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _bench_png() -> str:
+    """A 64x64 red square, as bare base64, for the vision half of the bench.
+
+    Generated rather than shipped so the benchmark has no fixture to keep in
+    sync, and so the question ("what is in this image?") has an obvious answer.
+    """
+    import base64
+    import struct
+    import zlib
+
+    size = 64
+    raw = b"".join(b"\x00" + b"\xf2\x3b\x3b" * size for _ in range(size))
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        )
+
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(raw, 9))
+        + chunk(b"IEND", b"")
+    )
+    return base64.b64encode(png).decode("ascii")
+
+
 def cmd_bench(args, settings: Settings) -> int:
     from loma.pipeline import VoicePipeline
 
@@ -603,9 +651,13 @@ def cmd_bench(args, settings: Settings) -> int:
     control_times: list[float] = []
     tool_times: list[float] = []
 
+    phases: dict[str, dict] = {}
+    vision: dict = {}
+
     with VoicePipeline(settings) as pipeline:
         pipeline.warm_up()
         wait_for_settle(1.0)
+        phases["warm_text"] = snapshot(pipeline.client).as_dict()
 
         controls = ControlRouter(settings.control_enabled)
         for phrase in ("stop", "start over", "say that again", "goodbye"):
@@ -622,6 +674,32 @@ def cmd_bench(args, settings: Settings) -> int:
             print(f"turn {index + 1}: {result.total_s:.2f}s -> {result.reply[:80]}")
 
         wait_for_settle(1.0)
+        phases["text"] = snapshot(pipeline.client).as_dict()
+
+        if args.swap:
+            # One image turn. With dynamic models this unloads the text model,
+            # loads the VLM, and swaps back for the final text turn below.
+            vision_result = pipeline.reply(
+                "What is in this image? Answer in one short sentence.",
+                speak=False,
+                images=[_bench_png()],
+            )
+            print(f"vision  : {vision_result.total_s:.2f}s -> {vision_result.reply[:80]}")
+            wait_for_settle(1.0)
+            phases["vision"] = snapshot(pipeline.client).as_dict()
+
+            back = pipeline.reply("Say hello in one word.", speak=False)
+            results.append(back)
+            wait_for_settle(1.0)
+            phases["text_again"] = snapshot(pipeline.client).as_dict()
+
+            vision = {
+                "reply": vision_result.reply,
+                "total_s": round(vision_result.total_s, 3),
+                "first_token_s": round(vision_result.first_token_s, 3),
+            }
+
+        manager = pipeline.models.as_dict()
         snap = snapshot(pipeline.client)
 
     peak = peak_rss_mb()
@@ -643,6 +721,9 @@ def cmd_bench(args, settings: Settings) -> int:
                 "avg_first_token_s": round(avg_first, 3),
                 "budget_mb": settings.memory_budget_mb,
                 "within_budget": ok,
+                "model_manager": manager,
+                "phases": phases,
+                "vision": vision or None,
             },
             indent=2,
         ))
@@ -656,6 +737,21 @@ def cmd_bench(args, settings: Settings) -> int:
             print(f"Avg tool route  : {avg_tool * 1000:.0f} ms  (Needle)")
         print(f"Avg first token : {avg_first:.2f}s")
         print(f"Avg full turn   : {avg_total:.2f}s")
+        print(
+            "Chat model      : "
+            + ("dynamic swap" if manager["dynamic"] else "single")
+            + f"  ({manager['swaps']} swap(s), active: {manager['active'] or 'none'})"
+        )
+        if manager["last_swap"]:
+            swap = manager["last_swap"]
+            print(
+                f"Last swap       : {swap['from']} -> {swap['to']} "
+                f"(unload {swap['unload_seconds']:.3f}s; load is the next first token)"
+            )
+        for name, phase in phases.items():
+            print(f"Phase {name:<12}: {phase['total_mb']:7.1f} MB total, "
+                  f"{phase['ollama_vram_mb']:7.1f} MB GPU, "
+                  f"{', '.join(m['name'] for m in phase['models']) or 'none'}")
 
     if not ok and not args.allow_over_budget:
         print("\nFAILED: over the memory budget", file=sys.stderr)

@@ -42,5 +42,18 @@ def test_as_dict_is_json_shaped():
     assert data["models"][0]["size_mb"] == 2.0
 
 
+def test_gpu_share_is_reported_separately():
+    snap = MemorySnapshot(
+        python_rss_mb=100.0,
+        ollama_models=[
+            {"name": "lfm3:latest", "size": 1_700_000_000, "size_vram": 1_500_000_000}
+        ],
+    )
+    assert snap.ollama_vram_mb == 1_500.0
+    data = snap.as_dict()
+    assert data["ollama_vram_mb"] == 1500.0
+    assert data["models"][0]["vram_mb"] == 1500.0
+
+
 def test_process_rss_is_positive():
     assert process_rss_mb() > 0

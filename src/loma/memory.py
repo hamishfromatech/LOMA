@@ -33,6 +33,15 @@ class MemorySnapshot:
         return sum(m.get("size", 0) for m in self.ollama_models) / 1_000_000
 
     @property
+    def ollama_vram_mb(self) -> float:
+        """The part of the loaded models Ollama placed in GPU memory.
+
+        On Apple silicon this is unified memory, so the number mirrors ``size``;
+        on a discrete GPU it is the VRAM share and the difference is real.
+        """
+        return sum(m.get("size_vram", 0) for m in self.ollama_models) / 1_000_000
+
+    @property
     def total_mb(self) -> float:
         return self.python_rss_mb + self.ollama_mb
 
@@ -40,12 +49,15 @@ class MemorySnapshot:
         return {
             "python_rss_mb": round(self.python_rss_mb, 1),
             "ollama_mb": round(self.ollama_mb, 1),
+            "ollama_vram_mb": round(self.ollama_vram_mb, 1),
             "total_mb": round(self.total_mb, 1),
             "models": [
                 {
                     "name": m.get("name"),
                     "size_mb": round(m.get("size", 0) / 1_000_000, 1),
+                    "vram_mb": round(m.get("size_vram", 0) / 1_000_000, 1),
                     "runner": m.get("runner"),
+                    "processor": m.get("processor"),
                     "context": m.get("context_length"),
                 }
                 for m in self.ollama_models
@@ -93,11 +105,14 @@ def format_snapshot(snap: MemorySnapshot, budget_mb: int | None = None) -> str:
     lines = [
         f"Python process : {snap.python_rss_mb:7.1f} MB",
         f"Ollama models  : {snap.ollama_mb:7.1f} MB",
+        f"  of which GPU : {snap.ollama_vram_mb:7.1f} MB",
     ]
     for model in snap.ollama_models:
+        vram = model.get("size_vram", 0) / 1_000_000
+        processor = model.get("processor") or model.get("runner") or "?"
         lines.append(
             f"    {model.get('name', '?'):<20} {model.get('size', 0) / 1_000_000:7.1f} MB"
-            f"  ({model.get('runner', '?')})"
+            f"  (gpu {vram:.1f} MB, {processor})"
         )
     lines.append(f"{'Total':<15}  {snap.total_mb:7.1f} MB")
     if budget_mb:

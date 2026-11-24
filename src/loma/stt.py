@@ -18,6 +18,70 @@ from loma.config import Settings
 log = logging.getLogger(__name__)
 
 
+def _ignore_invalid_frames(frames):
+    """Skip frames PyAV cannot decode instead of aborting the whole file."""
+    iterator = iter(frames)
+    while True:
+        try:
+            yield next(iterator)
+        except StopIteration:
+            break
+        except Exception:  # noqa: BLE001 - av.error.InvalidDataError and friends
+            continue
+
+
+def _group_frames(frames, num_samples: int | None = None):
+    """Batch frames so the resampler sees a decent chunk at a time."""
+    import av
+
+    fifo = av.audio.fifo.AudioFifo()
+    for frame in frames:
+        frame.pts = None  # ignore the timestamp check across container formats
+        fifo.write(frame)
+        if num_samples is not None and fifo.samples >= num_samples:
+            yield fifo.read()
+    if fifo.samples > 0:
+        yield fifo.read()
+
+
+def decode_audio(source: str | Path, sample_rate: int = 16_000) -> np.ndarray:
+    """Decode an audio file to mono float32 at ``sample_rate``.
+
+    This mirrors ``faster_whisper.audio.decode_audio`` with one difference: it
+    does not pass ``metadata_errors`` to ``av.open``. PyAV 19 removed that
+    keyword and faster-whisper 1.2.1 still passes it, so letting faster-whisper
+    decode a file path raises ``TypeError`` — every upload to /api/transcribe
+    became a 500. Decoding here works on both old and new PyAV, and keeps the
+    model call on a plain numpy array (which is also the microphone path).
+    """
+    import io
+    import itertools
+
+    import av
+
+    resampler = av.audio.resampler.AudioResampler(
+        format="s16", layout="mono", rate=sample_rate
+    )
+    raw = io.BytesIO()
+    dtype = None
+
+    with av.open(str(source), mode="r") as container:
+        frames = _ignore_invalid_frames(container.decode(audio=0))
+        grouped = _group_frames(frames, 500_000)
+        # ``None`` flushes whatever is still buffered in the resampler.
+        for frame in itertools.chain(grouped, [None]):
+            for out in resampler.resample(frame):
+                array = out.to_ndarray()
+                dtype = array.dtype
+                raw.write(array)
+
+    if dtype is None:
+        return np.zeros(0, dtype=np.float32)
+
+    audio = np.frombuffer(raw.getbuffer(), dtype=dtype)
+    return audio.astype(np.float32) / 32768.0
+
+
 @dataclass(slots=True)
 class Transcript:
     text: str
@@ -70,6 +134,11 @@ class Transcriber:
     # -- inference -----------------------------------------------------
     def transcribe(self, audio: np.ndarray | str | Path) -> Transcript:
         """Transcribe float32 mono audio (or an audio file path)."""
+        if isinstance(audio, (str, Path)):
+            audio = decode_audio(audio, self.settings.sample_rate)
+        if audio.size == 0:
+            return Transcript("")
+
         segments, info = self.model.transcribe(
             audio,
             language=self.settings.stt_language,

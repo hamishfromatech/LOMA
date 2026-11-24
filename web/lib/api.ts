@@ -131,6 +131,7 @@ export function getSettings(): Promise<SettingsPayload> {
 
 export function updateSettings(patch: {
   llm_model?: string
+  vlm_model?: string
   tts_voice?: string
   temperature?: number
   speak_replies?: boolean

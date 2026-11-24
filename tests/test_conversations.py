@@ -104,3 +104,39 @@ def test_ids_cannot_escape_the_directory(tmp_path):
     store = ConversationStore(tmp_path)
     path = store._path("../../etc/passwd")
     assert path.parent == tmp_path
+
+
+def test_a_tool_trace_round_trips_without_its_results(tmp_path):
+    store = ConversationStore(tmp_path)
+    conversation = store.create("Tools")
+    conversation.messages = [
+        {"role": "user", "content": "roll a d20"},
+        {
+            "role": "assistant",
+            "content": "You rolled a 14.",
+            "tool_trace": [
+                {"name": "roll_die", "arguments": {"sides": 20}, "result": "roll=14"},
+            ],
+        },
+    ]
+    store.save(conversation)
+
+    loaded = store.get(conversation.id)
+    assert loaded is not None
+    trace = loaded.messages[-1]["tool_trace"]
+    assert trace == [{"name": "roll_die", "arguments": {"sides": 20}}]
+    assert "result" not in trace[0]
+
+
+def test_a_junk_tool_trace_is_dropped(tmp_path):
+    store = ConversationStore(tmp_path)
+    conversation = store.create()
+    conversation.messages = [
+        {"role": "assistant", "content": "hi", "tool_trace": "nonsense"},
+        {"role": "assistant", "content": "ok", "tool_trace": [{"arguments": {"a": 1}}]},
+    ]
+    store.save(conversation)
+
+    loaded = store.get(conversation.id)
+    assert loaded is not None
+    assert all("tool_trace" not in message for message in loaded.messages)

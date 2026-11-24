@@ -173,6 +173,8 @@ function PromptInputTextarea({
         className
       )}
       rows={1}
+      autoComplete="off"
+      spellCheck={false}
       disabled={disabled}
       {...props}
     />

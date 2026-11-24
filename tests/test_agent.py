@@ -10,9 +10,12 @@ class FakeClient:
     def __init__(self, reply: str = "Sure thing.") -> None:
         self.reply = reply
         self.seen: list[list[dict[str, str]]] = []
+        self.kwargs: list[dict] = []
 
-    def chat_stream(self, messages, *, think: bool = False, on_usage=None, **_):
-        self.seen.append(list(messages))
+    def chat_stream(self, messages, *, think: bool = False, on_usage=None, **kwargs):
+        # Copy the dicts: the agent strips one-shot images after the turn.
+        self.seen.append([dict(message) for message in messages])
+        self.kwargs.append(kwargs)
         for word in self.reply.split(" "):
             yield word + " "
         if on_usage is not None:
@@ -73,3 +76,38 @@ def test_failed_turn_does_not_leave_a_dangling_user_message():
     with contextlib.suppress(RuntimeError):
         list(agent.respond("hello"))
     assert all(m["role"] != "user" for m in agent.messages)
+
+
+def test_the_turn_model_and_context_travel_with_the_request():
+    """The vision model answers an image turn without a second client."""
+    client = FakeClient("A red square.")
+    agent = Agent(client, Settings())
+
+    list(
+        agent.respond(
+            "what is this?",
+            images=["aGVsbG8="],
+            model="lfm3-vl:latest",
+            num_ctx=128_000,
+        )
+    )
+
+    assert client.kwargs[-1]["model"] == "lfm3-vl:latest"
+    assert client.kwargs[-1]["num_ctx"] == 128_000
+    assert agent.model == "lfm3-vl:latest"
+    # The image reached the model on this turn...
+    assert client.seen[-1][-1]["images"] == ["aGVsbG8="]
+    # ...and was dropped from the history afterwards (one-shot).
+
+
+def test_images_are_one_shot_so_the_text_model_can_answer_next():
+    """The swap back to a text model must not resend the picture."""
+    client = FakeClient("A red square.")
+    agent = Agent(client, Settings())
+
+    list(agent.respond("what is this?", images=["aGVsbG8="], model="lfm3-vl:2b"))
+    assert agent.messages[-2]["content"] == "what is this?"
+    assert "images" not in agent.messages[-2]
+
+    list(agent.respond("thanks", model="lfm3:latest"))
+    assert all("images" not in message for message in agent.messages)

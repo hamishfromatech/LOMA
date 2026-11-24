@@ -82,6 +82,7 @@ class Runtime:
         pipeline.settings = settings
         pipeline.client.settings = settings
         pipeline.agent.settings = settings
+        pipeline.models.settings = settings
         pipeline.transcriber.settings = settings
         pipeline.tool_router.settings = settings
         pipeline.controls.enabled = settings.control_enabled
@@ -92,6 +93,7 @@ class Runtime:
         self,
         *,
         llm_model: str | None = None,
+        vlm_model: str | None = None,
         tts_voice: str | None = None,
         temperature: float | None = None,
         speak_replies: bool | None = None,
@@ -103,6 +105,7 @@ class Runtime:
             self.settings.prefs_path,
             {
                 "llm_model": llm_model,
+                "vlm_model": vlm_model,
                 "tts_voice": tts_voice,
                 "temperature": temperature,
                 "speak_replies": speak_replies,
@@ -110,13 +113,20 @@ class Runtime:
         )
 
         previous_model = self.settings.llm_model
+        previous_vlm = self.settings.vlm_model
         updated = Settings.from_env()
         self._apply(updated)
 
-        if llm_model and llm_model != previous_model:
-            log.info("language model: %s -> %s", previous_model, llm_model)
-            with self.lock:
+        # A model the user replaced should not linger in RAM/VRAM. With dynamic
+        # loading the next turn only needs whichever model it picks.
+        with self.lock:
+            if llm_model and llm_model != previous_model:
+                log.info("language model: %s -> %s", previous_model, llm_model)
                 self.pipeline.client.unload(previous_model)
+            if vlm_model and vlm_model != previous_vlm:
+                log.info("vision model: %s -> %s", previous_vlm, vlm_model)
+                self.pipeline.client.unload(previous_vlm)
+        self.pipeline.models.forget()
 
         return self.settings_payload()
 
@@ -214,6 +224,12 @@ class Runtime:
         return {
             "models": usable,
             "current": self.settings.llm_model,
+            "vision_model": self.settings.vlm_model,
+            "dynamic": self.settings.dynamic_models,
+            # Can the configured image model actually read images? The composer
+            # keeps its attach button enabled on this rather than on the text
+            # model's capabilities, because the swap makes them different models.
+            "vision": self.pipeline.models.supports_vision(self.settings.vlm_model),
             "source": discovered[0]["source"] if discovered else ("ollama" if not error else ""),
             "error": error,
         }
@@ -233,6 +249,8 @@ class Runtime:
 
         return {
             "llm_model": self.settings.llm_model,
+            "vlm_model": self.settings.vlm_model,
+            "dynamic_models": self.settings.dynamic_models,
             "tts_voice": self.settings.tts_voice,
             "temperature": self.settings.temperature,
             "speak_replies": self.settings.speak_replies,
@@ -269,44 +287,62 @@ class Runtime:
         speak: bool | None = None,
         images: list[str] | None = None,
     ) -> Iterator[dict]:
-        """Run one turn inside a conversation and persist the result."""
-        conversation = self.store.get(conversation_id)
-        if conversation is None:
-            raise KeyError(conversation_id)
+        """Run one turn inside a conversation and persist the result.
 
-        agent = Agent(self.pipeline.client, self.settings)
-        agent.load(conversation.messages)
-
+        The conversation is read, answered and written **inside the lock**. It
+        used to be read before taking the lock, so two overlapping requests both
+        started from the same old copy and the second save dropped the first
+        turn's messages. One voice, one conversation at a time — including the
+        load and the save.
+        """
         stored_memory = False
-        try:
-            with self.lock:
-                self.pipeline.agent = agent
-                self.pipeline.last_reply = conversation.last_reply
-                self.pipeline.memory = self.memory if self.settings.memory_enabled else None
 
-                for event in self.pipeline.stream_events(
-                    message,
-                    speak=False,
-                    emit_audio=self.settings.speak_replies if speak is None else speak,
-                    images=images,
-                ):
-                    if event.get("type") == "memory":
-                        stored_memory = True
-                    yield event
-        except StopLoop:
-            yield {"type": "done", "reply": "", "intent": "exit", "tool": [], "timings": {}}
-        finally:
-            reply = self.pipeline.last_reply
-            conversation.messages = agent.transcript()
-            conversation.last_reply = reply
-            if conversation.title in {"", "New chat"} and conversation.messages:
-                conversation.title = ConversationStore.title_from(
-                    next(
-                        (m["content"] for m in conversation.messages if m["role"] == "user"),
+        with self.lock:
+            conversation = self.store.get(conversation_id)
+            if conversation is None:
+                raise KeyError(conversation_id)
+
+            agent = Agent(self.pipeline.client, self.settings)
+            agent.load(conversation.messages)
+            self.pipeline.agent = agent
+            self.pipeline.last_reply = conversation.last_reply
+            self.pipeline.memory = self.memory if self.settings.memory_enabled else None
+
+            try:
+                try:
+                    for event in self.pipeline.stream_events(
                         message,
+                        speak=False,
+                        emit_audio=self.settings.speak_replies if speak is None else speak,
+                        images=images,
+                    ):
+                        if event.get("type") == "memory":
+                            stored_memory = True
+                        yield event
+                except StopLoop:
+                    yield {
+                        "type": "done",
+                        "reply": "",
+                        "intent": "exit",
+                        "tool": [],
+                        "timings": {},
+                    }
+            finally:
+                reply = self.pipeline.last_reply
+                conversation.messages = agent.transcript()
+                conversation.last_reply = reply
+                if conversation.title in {"", "New chat"} and conversation.messages:
+                    conversation.title = ConversationStore.title_from(
+                        next(
+                            (
+                                item["content"]
+                                for item in conversation.messages
+                                if item["role"] == "user"
+                            ),
+                            message,
+                        )
                     )
-                )
-            self.store.save(conversation)
+                self.store.save(conversation)
 
         # Outside the lock: a short, separate generation that must not delay the
         # next turn's audio.
@@ -348,6 +384,10 @@ class Runtime:
                 ],
                 MEMORY_SCHEMA,
                 max_tokens=80,
+                # Reuse whichever model is already resident. After an image turn
+                # that is the VLM; asking for the text model here would swap one
+                # in just to extract a sentence.
+                model=self.pipeline.models.active or self.settings.llm_model,
             )
         except Exception as exc:  # noqa: BLE001 - memory must never break a turn
             log.debug("memory extraction skipped: %s", exc)
@@ -447,6 +487,7 @@ class Runtime:
         return {
             "ready": self._warmed,
             "models": snap.as_dict(),
+            "model_manager": self.pipeline.models.as_dict(),
             "memory_budget_mb": self.settings.memory_budget_mb,
             "context": {
                 "window": self.settings.num_ctx,
@@ -460,6 +501,9 @@ class Runtime:
             ],
             "config": {
                 "llm_model": self.settings.llm_model,
+                "vlm_model": self.settings.vlm_model,
+                "dynamic_models": self.settings.dynamic_models,
+                "active_model": self.pipeline.models.active,
                 "tts_model": self.settings.tts_model,
                 "stt_model": self.settings.stt_model,
                 "tts_voice": self.settings.tts_voice,
