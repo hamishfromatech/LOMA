@@ -12,18 +12,18 @@ import { ToolResultCard } from "@/components/tool-cards"
 import { cn } from "@/lib/utils"
 import type { ChatMessage, TurnMetrics as Metrics } from "@/lib/types"
 import { Check, ChevronRight, Copy, Brain, TriangleAlert } from "lucide-react"
-import { useCallback, useState } from "react"
+import React, { useCallback, useState } from "react"
 
-function Stat({ label, value }: { label: string; value: string }) {
+const Stat = React.memo(function Stat({ label, value }: { label: string; value: string }) {
   return (
     <span className="flex items-baseline gap-1.5">
       <span className="text-loma-faint">{label}</span>
       <span className="tabular-nums text-loma-dim">{value}</span>
     </span>
   )
-}
+}, (a, b) => a.label === b.label && a.value === b.value)
 
-function Trace({ metrics, intent, matched }: { metrics: Metrics; intent?: string; matched?: string }) {
+const Trace = React.memo(function Trace({ metrics, intent, matched }: { metrics: Metrics; intent?: string; matched?: string }) {
   const [open, setOpen] = useState(false)
   const hasIntent = intent && intent !== "answer"
 
@@ -67,9 +67,9 @@ function Trace({ metrics, intent, matched }: { metrics: Metrics; intent?: string
       </CollapsibleContent>
     </Collapsible>
   )
-}
+}, (a, b) => a.metrics === b.metrics && a.intent === b.intent && a.matched === b.matched)
 
-export function AnswerMessage({ message }: { message: ChatMessage }) {
+export const AnswerMessage = React.memo(function AnswerMessage({ message }: { message: ChatMessage }) {
   const [copied, setCopied] = useState(false)
 
   const copy = useCallback(async () => {
@@ -159,9 +159,15 @@ export function AnswerMessage({ message }: { message: ChatMessage }) {
       </div>
     </article>
   )
-}
+}, (a, b) =>
+  a.message.id === b.message.id &&
+  a.message.content === b.message.content &&
+  a.message.tools.length === b.message.tools.length &&
+  a.message.streaming === b.message.streaming &&
+  a.message.error === b.message.error &&
+  a.message.truncated === b.message.truncated)
 
-export function UserMessage({ message }: { message: ChatMessage }) {
+export const UserMessage = React.memo(function UserMessage({ message }: { message: ChatMessage }) {
   // The image is not persisted with the conversation, so it survives exactly as
   // long as this component does — which is the honest behaviour: reload, and the
   // transcript has the words but not the picture.
@@ -191,4 +197,5 @@ export function UserMessage({ message }: { message: ChatMessage }) {
       </div>
     </div>
   )
-}
+}, (a, b) => a.message.id === b.message.id && a.message.content === b.message.content)
+
