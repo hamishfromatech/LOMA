@@ -163,7 +163,11 @@ function FileUploadTrigger({
 
 type FileUploadContentProps = React.HTMLAttributes<HTMLDivElement>
 
-function FileUploadContent({ className, ...props }: FileUploadContentProps) {
+function FileUploadContent({
+  className,
+  children,
+  ...props
+}: FileUploadContentProps) {
   const context = useContext(FileUploadContext)
   const [mounted, setMounted] = useState(false)
 
@@ -179,12 +183,14 @@ function FileUploadContent({ className, ...props }: FileUploadContentProps) {
   const content = (
     <div
       className={cn(
-        "bg-background/80 fixed inset-0 z-50 flex items-center justify-center backdrop-blur-sm",
+        "bg-background/80 fixed inset-0 z-50 flex items-center justify-center backdrop-blur-sm pointer-events-none",
         "animate-in fade-in-0 slide-in-from-bottom-10 zoom-in-90 duration-150",
         className
       )}
       {...props}
-    />
+    >
+      {children}
+    </div>
   )
 
   return createPortal(content, document.body)

@@ -44,9 +44,10 @@ export function MicButton({ onTranscript, disabled, className }: Props) {
       stream.current = media
       chunks.current = []
 
-      const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-        ? "audio/webm;codecs=opus"
-        : "audio/webm"
+      const mime =
+        MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+          ? "audio/webm;codecs=opus"
+          : "audio/mp4"
       const rec = new MediaRecorder(media, { mimeType: mime })
       recorder.current = rec
 

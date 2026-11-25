@@ -94,6 +94,8 @@ export function SettingsView() {
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
+  const [memoryConfirm, setMemoryConfirm] = useState(false)
+  const [mcpRemoveConfirm, setMcpRemoveConfirm] = useState<string | null>(null)
 
   // add-server form
   const [name, setName] = useState("")
@@ -105,6 +107,19 @@ export function SettingsView() {
 
   // memory editor
   const [memoryDraft, setMemoryDraft] = useState("")
+
+  // Auto-clear the "confirm?" state after 3s so the user doesn't have to
+  // rush-click the button.
+  useEffect(() => {
+    if (!memoryConfirm) return
+    const timer = window.setTimeout(() => setMemoryConfirm(false), 3000)
+    return () => window.clearTimeout(timer)
+  }, [memoryConfirm])
+  useEffect(() => {
+    if (!mcpRemoveConfirm) return
+    const timer = window.setTimeout(() => setMcpRemoveConfirm(null), 3000)
+    return () => window.clearTimeout(timer)
+  }, [mcpRemoveConfirm])
 
   const load = useCallback(async () => {
     try {
@@ -206,17 +221,22 @@ export function SettingsView() {
   }, [args, command, env, flashSaved, name, transport, url])
 
   const removeServer = useCallback(async (server: string) => {
-    setBusy(`remove-${server}`)
-    setError(null)
-    try {
-      const overview = await removeMcpServer(server)
-      setSettings((current) => (current ? { ...current, mcp: overview } : current))
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "could not remove the server")
-    } finally {
-      setBusy(null)
+    if (mcpRemoveConfirm === server) {
+      setBusy(`remove-${server}`)
+      setMcpRemoveConfirm(null)
+      setError(null)
+      try {
+        const overview = await removeMcpServer(server)
+        setSettings((current) => (current ? { ...current, mcp: overview } : current))
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "could not remove the server")
+      } finally {
+        setBusy(null)
+      }
+    } else {
+      setMcpRemoveConfirm(server)
     }
-  }, [])
+  }, [mcpRemoveConfirm])
 
   const saveMemory = useCallback(async () => {
     setBusy("memory")
@@ -234,7 +254,12 @@ export function SettingsView() {
   }, [flashSaved, memoryDraft])
 
   const wipeMemory = useCallback(async () => {
+    if (!memoryConfirm) {
+      setMemoryConfirm(true)
+      return
+    }
     setBusy("memory-clear")
+    setMemoryConfirm(false)
     setError(null)
     try {
       const memory = await clearMemory()
@@ -245,7 +270,7 @@ export function SettingsView() {
     } finally {
       setBusy(null)
     }
-  }, [])
+  }, [memoryConfirm])
 
   const reload = useCallback(async () => {
     setBusy("reload")
@@ -260,6 +285,24 @@ export function SettingsView() {
   }, [])
 
   if (!settings) {
+    if (error) {
+      return (
+        <div className="grid h-dvh place-items-center">
+          <div className="text-center">
+            <p className="mb-4 text-sm text-loma-danger">{error}</p>
+            <button
+              className={cn(
+                buttonVariants({ variant: "ghost" }),
+                "text-sm text-loma-faint",
+              )}
+              onClick={() => void getSettings().then(setSettings)}
+            >
+              retry
+            </button>
+          </div>
+        </div>
+      )
+    }
     return (
       <div className="grid h-dvh place-items-center">
         <div className="flex items-center gap-3 text-sm text-loma-faint">
@@ -435,6 +478,9 @@ export function SettingsView() {
                     : current,
                 )
               }
+              onInput={(event) =>
+                void change({ temperature: Number((event.target as HTMLInputElement).value) })
+              }
               onMouseUp={(event) =>
                 void change({ temperature: Number(event.currentTarget.value) })
               }
@@ -599,14 +645,19 @@ export function SettingsView() {
                 size="sm"
                 onClick={() => void wipeMemory()}
                 disabled={busy !== null}
-                className="text-loma-faint hover:text-red-400"
+                className={cn(
+                  "text-loma-faint hover:text-red-400",
+                  memoryConfirm ? "bg-red-500/10" : "",
+                )}
               >
                 {busy === "memory-clear" ? (
                   <Loader2 className="size-3.5 animate-spin" />
+                ) : memoryConfirm ? (
+                  <Trash2 className="size-3.5" />
                 ) : (
                   <Trash2 className="size-3.5" />
                 )}
-                Clear
+                {memoryConfirm ? "confirm?" : "Clear"}
               </Button>
               <Button
                 size="sm"
@@ -708,10 +759,15 @@ export function SettingsView() {
                     aria-label={`Remove ${server.name}`}
                     onClick={() => void removeServer(server.name)}
                     disabled={busy !== null}
-                    className="text-loma-faint hover:text-red-400"
+                    className={cn(
+                      "text-loma-faint hover:text-red-400",
+                      mcpRemoveConfirm === server.name ? "bg-red-500/10" : "",
+                    )}
                   >
                     {busy === `remove-${server.name}` ? (
                       <Loader2 className="size-4 animate-spin" />
+                    ) : mcpRemoveConfirm === server.name ? (
+                      <Trash2 className="size-4" />
                     ) : (
                       <Trash2 className="size-4" />
                     )}

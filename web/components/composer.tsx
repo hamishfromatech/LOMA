@@ -39,7 +39,7 @@ type Props = {
   onSubmit: () => void
   busy: boolean
   onStop: () => void
-  voiceOn: boolean
+  voiceOn: boolean | null
   onToggleVoice: () => void
   onTranscript: (text: string) => void
   settings: SettingsPayload | null
@@ -114,7 +114,7 @@ export function Composer({
                   type="button"
                   onClick={() => onRemoveAttachment(attachment.id)}
                   aria-label="Remove image"
-                  className="absolute right-1 top-1 grid size-5 place-items-center rounded-full bg-black/70 text-loma-ink opacity-0 transition group-hover/thumb:opacity-100 focus-visible:opacity-100"
+                  className="absolute right-1 top-1 grid size-5 place-items-center rounded-full bg-black/70 text-loma-ink"
                 >
                   <X className="size-3" />
                 </button>
@@ -155,7 +155,7 @@ export function Composer({
             <button
               type="button"
               onClick={onToggleVoice}
-              aria-pressed={voiceOn}
+              aria-pressed={voiceOn ?? false}
               aria-label={voiceOn ? "Spoken replies are on" : "Spoken replies are off"}
               className={cn(
                 "flex h-7 items-center gap-1.5 rounded-full px-2 font-mono text-[10.5px] uppercase tracking-[0.1em] transition",
@@ -173,6 +173,7 @@ export function Composer({
             {settings && (
               <Select
                 value={settings.llm_model}
+                disabled={busy}
                 onValueChange={(next) => onModelChange(String(next))}
                 onOpenChange={(open) => {
                   // Ollama's list changes whenever the user pulls a model.

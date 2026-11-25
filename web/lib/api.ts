@@ -17,8 +17,15 @@ export const API_BASE =
 async function json<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, init)
   if (!response.ok) {
-    const detail = await response.text()
-    throw new Error(detail || `${response.status} ${response.statusText}`)
+    try {
+      return (await response.json()) as T
+    } catch {
+      // HTML / traceback: cap ~200 chars instead of rendering raw
+      const detail = await response.text()
+      throw new Error(
+        `${response.status} ${response.statusText}: ${(detail || "").slice(0, 200)}`,
+      )
+    }
   }
   return (await response.json()) as T
 }
@@ -101,7 +108,19 @@ export async function streamChat(
 
   while (true) {
     const { done, value } = await reader.read()
-    if (done) break
+    if (done) {
+      // Flush: a trailing record without \n\n is a split UTF-8 byte;
+      // decode with stream:false forces a final parse of leftover bytes.
+      const tail = decoder.decode(value, { stream: false })
+      if (tail.trim()) {
+        const payload = tail.trim().replace(/^data:\s*/, "")
+        if (payload) {
+          try { onEvent(JSON.parse(payload) as StreamEvent) }
+          catch { /* partial — not worth tearing the stream */ }
+        }
+      }
+      break
+    }
     buffer += decoder.decode(value, { stream: true })
 
     let boundary = buffer.indexOf("\n\n")
@@ -226,6 +245,13 @@ export async function deleteConversation(id: string): Promise<void> {
     { method: "DELETE" },
   )
   if (!response.ok) throw new Error(await response.text())
+}
+
+export async function stopConversation(id: string): Promise<void> {
+  await fetch(
+    `${API_BASE}/api/conversations/${encodeURIComponent(id)}/stop`,
+    { method: "POST" },
+  )
 }
 
 // ---------------------------------------------------------------------------

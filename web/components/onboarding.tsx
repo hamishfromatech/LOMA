@@ -143,10 +143,15 @@ export function Onboarding({
     setCustomGoal("")
   }
 
+  const [error, setError] = useState<string | null>(null)
+
   const finish = async () => {
     setBusy(true)
+    setError(null)
     try {
       await onComplete(answers)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "could not save")
     } finally {
       setBusy(false)
     }
@@ -154,18 +159,28 @@ export function Onboarding({
 
   const skip = async () => {
     setBusy(true)
+    setError(null)
     try {
       await onSkip()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "could not skip")
     } finally {
       setBusy(false)
     }
   }
 
-  // Enter advances; Escape is deliberately not bound — losing five answers to a
-  // stray keypress is worse than having no shortcut.
+  // Enter advances (for inputs/areas); Escape is deliberately not bound.
+  // Don't swallow Enter on non-text elements — buttons fire onClick on Enter
+  // regardless of preventDefault, but the handler would also call goNext(),
+  // advancing the step after the button toggled a goal. So we only preventDefault
+  // when the target is a text input or textarea.
   const onKeyDown = (event: React.KeyboardEvent) => {
     if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault()
+      const target = event.target as HTMLElement
+      const isTextInput =
+        target.tagName === "INPUT" && (event.target as HTMLInputElement).type !== "button"
+        || target.tagName === "TEXTAREA"
+      if (isTextInput) event.preventDefault()
       if (recap) void finish()
       else goNext()
     }
@@ -179,6 +194,9 @@ export function Onboarding({
       />
 
       <div className="relative w-full max-w-[620px]" onKeyDown={onKeyDown}>
+        {error && (
+          <p className="mb-3 text-center text-[12px] text-loma-danger">{error}</p>
+        )}
         <div className="mb-7 flex flex-col items-center text-center">
           <LomaMark size={44} className="mb-5" />
           {!recap ? (

@@ -27,6 +27,7 @@ import {
   renameConversation,
   skipOnboarding,
   streamChat,
+  stopConversation,
   updateSettings,
 } from "@/lib/api"
 import type {
@@ -156,7 +157,7 @@ export function ChatView() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState("")
   const [busy, setBusy] = useState(false)
-  const [voiceOn, setVoiceOn] = useState(true)
+  const [voiceOn, setVoiceOn] = useState<boolean | null>(null)
   const [status, setStatus] = useState<Status | null>(null)
   const [settings, setSettings] = useState<SettingsPayload | null>(null)
   const [models, setModels] = useState<ModelOption[]>([])
@@ -496,7 +497,7 @@ export function ChatView() {
       try {
         await streamChat(message, handle, {
           conversationId: conversationId!,
-          speak: voiceOn,
+          speak: voiceOn ?? undefined,
           signal: controller.signal,
           images,
         })
@@ -518,8 +519,9 @@ export function ChatView() {
   const stopTurn = useCallback(() => {
     abort.current?.abort()
     stop()
+    void stopConversation(activeId!).catch(() => undefined)
     setBusy(false)
-  }, [stop])
+  }, [activeId, stop])
 
   const currentModel = models.find((item) => item.name === settings?.llm_model)
   const visionEnabled =
@@ -610,7 +612,9 @@ export function ChatView() {
                 onStop={stopTurn}
                 voiceOn={voiceOn}
                 onToggleVoice={() => toggleVoice(!voiceOn)}
-                onTranscript={(text) => void send(text)}
+                onTranscript={(text) =>
+                  setInput((prev) => prev + (prev ? " " : "") + text.trim())
+                }
                 settings={settings}
                 models={models}
                 onModelChange={(model) => void changeModel(model)}
@@ -653,7 +657,10 @@ export function ChatView() {
               </div>
 
               {error && (
-                <p className="mt-6 text-center font-mono text-[10.5px] text-loma-danger">
+                <p
+                  role="alert"
+                  className="mt-6 text-center font-mono text-[10.5px] text-loma-danger"
+                >
                   {error}
                 </p>
               )}
@@ -691,7 +698,9 @@ export function ChatView() {
                   onStop={stopTurn}
                   voiceOn={voiceOn}
                   onToggleVoice={() => toggleVoice(!voiceOn)}
-                  onTranscript={(text) => void send(text)}
+                  onTranscript={(text) =>
+                    setInput((prev) => prev + (prev ? " " : "") + text.trim())
+                  }
                   settings={settings}
                   models={models}
                   onModelChange={(model) => void changeModel(model)}
@@ -703,7 +712,10 @@ export function ChatView() {
                   visionEnabled={visionEnabled}
                 />
                 {error && (
-                  <p className="mt-1 truncate px-1 text-center font-mono text-[10px] text-loma-danger">
+                  <p
+                    role="alert"
+                    className="mt-1 truncate px-1 text-center font-mono text-[10px] text-loma-danger"
+                  >
                     {error}
                   </p>
                 )}
