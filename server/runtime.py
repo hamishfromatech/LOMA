@@ -303,7 +303,7 @@ class Runtime:
                 raise KeyError(conversation_id)
 
             agent = Agent(self.pipeline.client, self.settings)
-            agent.load(conversation.messages)
+            agent.load(conversation.messages, summary=conversation.summary)
             self.pipeline.agent = agent
             self.pipeline.last_reply = conversation.last_reply
             self.pipeline.memory = self.memory if self.settings.memory_enabled else None
@@ -329,7 +329,12 @@ class Runtime:
                     }
             finally:
                 reply = self.pipeline.last_reply
+                # The agent's archive, not its prompt window. Writing the window
+                # back is what made a long chat get shorter on every turn.
                 conversation.messages = agent.transcript()
+                conversation.trimmed_messages = agent.trimmed_messages
+                if agent.summary:
+                    conversation.summary = agent.summary
                 conversation.last_reply = reply
                 if conversation.title in {"", "New chat"} and conversation.messages:
                     conversation.title = ConversationStore.title_from(

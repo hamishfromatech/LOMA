@@ -20,8 +20,11 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from datetime import date
 from pathlib import Path
+
+from .fs import atomic_write_text
 
 log = logging.getLogger(__name__)
 
@@ -39,6 +42,11 @@ _BULLET = re.compile(r"^\s*[-*]\s+(.+?)(?:\s+_\([^)]*\)_)?\s*$")
 class MemoryStore:
     def __init__(self, path: Path) -> None:
         self.path = path
+        #: ``append`` reads the file, edits the text and writes it back. Two
+        #: appends racing each other (the explicit "remember that…" path and the
+        #: after-the-turn automatic one) would otherwise each write over the
+        #: other's fact, and neither would report the loss.
+        self._lock = threading.Lock()
 
     # -- raw file ------------------------------------------------------
     def ensure(self) -> None:
@@ -55,8 +63,10 @@ class MemoryStore:
             return HEADER
 
     def write(self, text: str) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(text if text.endswith("\n") else text + "\n")
+        # MEMORY.md is the only copy of everything LOMA has learned. Writing it
+        # in place truncates it first, so a crash or a full disk in the middle
+        # loses every fact rather than the last one.
+        atomic_write_text(self.path, text if text.endswith("\n") else text + "\n")
 
     # -- facts ---------------------------------------------------------
     def facts(self) -> list[str]:
@@ -72,15 +82,16 @@ class MemoryStore:
         if len(fact) < 3:
             return False
 
-        existing = {item.lower() for item in self.facts()}
-        if fact.lower() in existing:
-            return False
+        with self._lock:
+            existing = {item.lower() for item in self.facts()}
+            if fact.lower() in existing:
+                return False
 
-        line = f"- {fact} _({date.today().isoformat()}, {source})_\n"
-        text = self.read()
-        if not text.endswith("\n"):
-            text += "\n"
-        self.write(text + line)
+            line = f"- {fact} _({date.today().isoformat()}, {source})_\n"
+            text = self.read()
+            if not text.endswith("\n"):
+                text += "\n"
+            self.write(text + line)
         log.info("remembered: %s", fact)
         return True
 

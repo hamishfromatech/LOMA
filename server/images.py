@@ -9,8 +9,18 @@ is what a FileReader produces; Ollama wants the bare base64 payload.
 
 from __future__ import annotations
 
+import base64
+
 MAX_IMAGES = 4
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
+
+#: The largest chat request body that could ever be legitimate. Images arrive as
+#: base64, which is 4 characters per 3 bytes, so four 8 MB images are 42.7 MB of
+#: JSON — and Flask's MAX_CONTENT_LENGTH was 32 MB. The documented limit was
+#: unreachable: the request died in Flask before this validator ran, with an HTML
+#: 413 the UI could not read. Exported so the app derives its cap from here and
+#: the two cannot drift apart again.
+MAX_BODY_BYTES = MAX_IMAGES * ((MAX_IMAGE_BYTES + 2) // 3 * 4) + 1024 * 1024
 
 
 def read_images(payload: dict) -> tuple[list[str], str | None]:
@@ -41,5 +51,14 @@ def read_images(payload: dict) -> tuple[list[str], str | None]:
         # it reaches the model rather than after a 20-second wait.
         if len(value) * 3 / 4 > MAX_IMAGE_BYTES:
             return [], f"image {index} is larger than {MAX_IMAGE_BYTES // (1024 * 1024)} MB"
+        # And it has to actually be base64. Anything else reaches Ollama and
+        # comes back as an opaque 400 from a model call that already cost a
+        # cold load, which reads to the user as "the model is broken".
+        try:
+            decoded = base64.b64decode(value, validate=True)
+        except ValueError:
+            return [], f"image {index} is not valid base64"
+        if not decoded:
+            return [], f"image {index} decoded to nothing"
         cleaned.append(value)
     return cleaned, None

@@ -18,6 +18,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from .fs import atomic_write_text
+
 log = logging.getLogger(__name__)
 
 STATE_FILENAME = "onboarding.json"
@@ -43,9 +45,7 @@ def read_state(data_dir: Path) -> dict[str, Any]:
 
 
 def write_state(data_dir: Path, state: dict[str, Any]) -> None:
-    path = state_path(data_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2) + "\n")
+    atomic_write_text(state_path(data_dir), json.dumps(state, indent=2) + "\n")
 
 
 def _clean(value: Any) -> str:

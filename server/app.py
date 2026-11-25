@@ -4,7 +4,6 @@ Endpoints
 ---------
 GET  /api/status          models, memory, context, tools
 GET  /api/tools           the MCP toolset
-GET  /api/history         the current conversation
 POST /api/chat            {"message": "..."} -> Server-Sent Events
 POST /api/transcribe      multipart audio -> {"text": "..."}
 POST /api/speak           {"text": "..."} -> audio/wav
@@ -26,7 +25,7 @@ from pathlib import Path
 
 from flask import Flask, Response, jsonify, request, stream_with_context
 
-from server.images import read_images
+from server.images import MAX_BODY_BYTES, read_images
 
 from .runtime import get_runtime
 
@@ -37,7 +36,11 @@ WEB_ORIGINS = {"http://localhost:3000", "http://127.0.0.1:3000"}
 
 def create_app() -> Flask:
     app = Flask(__name__)
-    app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024  # 32 MB of audio
+    # Derived from the image limits rather than guessed at them. Four 8 MB
+    # images are 42.7 MB once base64'd, so the old flat 32 MB made the documented
+    # "up to 4 images" unreachable — Flask rejected the request before the
+    # validator that would have given a readable error ever ran.
+    app.config["MAX_CONTENT_LENGTH"] = max(32 * 1024 * 1024, MAX_BODY_BYTES)
 
     logging.basicConfig(
         level=os.getenv("LOMA_LOG_LEVEL", "INFO"),
@@ -72,11 +75,11 @@ def create_app() -> Flask:
             ]
         )
 
-    @app.get("/api/history")
-    def history() -> Response:
-        return jsonify(get_runtime().history())
-
     # -- conversations -------------------------------------------------
+    # There is no /api/history: "the current conversation" is not a thing the
+    # server knows. The client names the conversation it means, and reads it with
+    # GET /api/conversations/<id>. The route that used to be here called
+    # Runtime.history(), which has never existed — every request to it was a 500.
     @app.get("/api/conversations")
     def list_conversations() -> Response:
         return jsonify(get_runtime().list_conversations())
@@ -334,9 +337,7 @@ def _stream_turn(
     def events():
         try:
             runtime.warm()
-            for event in runtime.chat(
-                conversation_id, message, speak=speak, images=images
-            ):
+            for event in runtime.chat(conversation_id, message, speak=speak, images=images):
                 yield sse(event)
         except KeyError:
             yield sse({"type": "error", "message": "no such conversation"})

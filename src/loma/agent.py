@@ -24,6 +24,7 @@ from typing import Any
 
 from loma.config import Settings
 from loma.context import estimate_messages_tokens
+from loma.conversations import MAX_TRANSCRIPT_MESSAGES
 from loma.ollama_client import OllamaClient, OllamaError
 
 log = logging.getLogger(__name__)
@@ -81,6 +82,8 @@ class Agent:
         self.last_finish_reason = ""
         self.compactions = 0
         self.last_compaction: Compaction | None = None
+        #: Exchanges dropped from the record by the size cap (see ``transcript``).
+        self.trimmed_messages = 0
         #: Long-term memory, injected per request and never persisted here.
         self.memory_context = ""
         #: A name + one-line index of the tools, set only for a capability
@@ -96,11 +99,25 @@ class Agent:
         self._messages: list[dict[str, str]] = [
             {"role": "system", "content": settings.system_prompt}
         ]
+        #: The conversation as it gets *stored*: every exchange, never trimmed,
+        #: never folded into a summary. ``_messages`` is what the model sees this
+        #: turn; ``_archive`` is what the user sees when they reopen the chat.
+        #: Keeping one list for both is what made compaction delete history — see
+        #: ``transcript``.
+        self._archive: list[dict[str, Any]] = []
+        #: The running summary of everything folded out of the window. Persisted
+        #: with the conversation so a second compaction folds the first summary
+        #: rather than re-deriving it from an already-shortened history.
+        self.summary = ""
 
     # -- conversation ---------------------------------------------------
     @property
     def messages(self) -> list[dict[str, str]]:
         return list(self._messages)
+
+    def _window_size(self) -> int:
+        """How many messages the model is allowed to see at once."""
+        return max(2, self.settings.history_turns * 2)
 
     @property
     def history_tokens(self) -> int:
@@ -109,11 +126,19 @@ class Agent:
 
     def reset(self) -> None:
         self._messages = [{"role": "system", "content": self.settings.system_prompt}]
+        self._archive = []
+        self.summary = ""
         self.last_prompt_tokens = 0
         self.last_compaction = None
 
-    def load(self, messages: list[dict[str, Any]]) -> None:
+    def load(self, messages: list[dict[str, Any]], *, summary: str = "") -> None:
         """Restore a conversation from disk, keeping the current system prompt.
+
+        Two views come out of one file. The *archive* is everything, in order —
+        that is what the sidebar renders and what the next save writes back, so
+        reopening a chat never loses the beginning of it. The *window* is the
+        recent tail the model actually reads, with the running summary in front
+        of it standing in for everything older.
 
         A saved tool trace is replayed as the wire protocol it came from
         (assistant ``tool_calls`` + a ``role: tool`` message) with the results
@@ -121,16 +146,29 @@ class Agent:
         answer a follow-up from memory instead of calling the tool: after one
         roll-die turn, "what time is it?" produced a made-up time 5/5 times.
         """
+        self._archive = [
+            dict(message)
+            for message in messages
+            if isinstance(message, dict) and message.get("role") in {"user", "assistant"}
+        ]
+        self.summary = summary.strip()
+
         self._messages = [{"role": "system", "content": self.settings.system_prompt}]
+        if self.summary:
+            self._messages.append(
+                {"role": "system", "content": f"{SUMMARY_PREFIX}\n{self.summary}"}
+            )
+
+        window = self._archive[-self._window_size() :]
         last_trace = max(
             (
                 index
-                for index, message in enumerate(messages)
+                for index, message in enumerate(window)
                 if message.get("role") == "assistant" and message.get("tool_trace")
             ),
             default=-1,
         )
-        for index, message in enumerate(messages):
+        for index, message in enumerate(window):
             role = message.get("role")
             content = message.get("content", "")
             if role not in {"user", "assistant"} or not content:
@@ -157,9 +195,7 @@ class Agent:
                         }
                     )
                 if calls:
-                    self._messages.append(
-                        {"role": "assistant", "content": "", "tool_calls": calls}
-                    )
+                    self._messages.append({"role": "assistant", "content": "", "tool_calls": calls})
                     for _call in calls:
                         self._messages.append(
                             {"role": "tool", "content": "(result omitted from replay)"}
@@ -169,13 +205,21 @@ class Agent:
         self.last_compaction = None
 
     def transcript(self) -> list[dict[str, Any]]:
-        """The persistable part of the conversation — no system messages.
+        """The whole conversation, for the file on disk — not the prompt.
+
+        This used to return the working window. Because that window is trimmed
+        to ``history_turns`` and folded by compaction, every turn rewrote the
+        JSON file with less of the chat than the turn before it: a conversation
+        that crossed the compaction threshold shrank to a handful of messages and
+        the summary that was supposed to stand in for the rest was dropped on the
+        floor, because it is a system message and only user/assistant were kept.
+        The record now lives here, untouched, and the model's view stays small.
 
         Only the most recent tool trace is kept. It carries names and arguments,
         never results, and it is what lets the next turn's model recognise that
         this conversation uses tools (see ``load``).
         """
-        messages = [m for m in self._messages if m["role"] in {"user", "assistant"}]
+        messages = [dict(message) for message in self._archive]
         last_trace = max(
             (index for index, message in enumerate(messages) if message.get("tool_trace")),
             default=-1,
@@ -183,6 +227,19 @@ class Agent:
         for index, message in enumerate(messages):
             if index != last_trace:
                 message.pop("tool_trace", None)
+
+        # A record still has to stop somewhere. The oldest exchanges are dropped
+        # past the cap, and the count is published so the caller can store it on
+        # the file rather than letting the chat quietly get shorter.
+        overflow = len(messages) - MAX_TRANSCRIPT_MESSAGES
+        self.trimmed_messages = max(0, overflow)
+        if overflow > 0:
+            log.warning(
+                "conversation record over %d messages: dropping the oldest %d",
+                MAX_TRANSCRIPT_MESSAGES,
+                overflow,
+            )
+            messages = messages[-MAX_TRANSCRIPT_MESSAGES:]
         return messages
 
     def record_exchange(self, user_text: str, reply: str) -> None:
@@ -200,6 +257,12 @@ class Agent:
             return
         self._messages.append({"role": "user", "content": user_text})
         self._messages.append({"role": "assistant", "content": reply})
+        self._archive.extend(
+            [
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": reply},
+            ]
+        )
         self._trim()
 
     def _begin_turn(
@@ -226,6 +289,9 @@ class Agent:
             # first rather than letting an image vanish silently.
             turn["images"] = images
         self._messages.append(turn)
+        # The question goes into the record straight away, without the pixels:
+        # images are one-shot and are not written to the conversation file.
+        self._archive.append({"role": "user", "content": user_text})
         self._trim()
 
         messages = self.messages
@@ -278,11 +344,14 @@ class Agent:
             if tool_trace:
                 message["tool_trace"] = tool_trace
             self._messages.append(message)
+            self._archive.append(dict(message))
         else:
-            # Nothing was produced — roll the user turn back so the next prompt
-            # is not polluted by a dangling turn.
+            # Nothing was produced — roll the user turn back so neither the next
+            # prompt nor the saved record ends on a dangling question.
             if self._messages and self._messages[-1].get("role") == "user":
                 self._messages.pop()
+            if self._archive and self._archive[-1].get("role") == "user":
+                self._archive.pop()
         self._trim()
         self._drop_images()
 
@@ -500,6 +569,11 @@ class Agent:
             {"role": "system", "content": f"{SUMMARY_PREFIX}\n{summary}"},
             *recent,
         ]
+        # The summary now stands in for everything folded out of the window. The
+        # record still holds all of it; this is what the *next* compaction folds
+        # together with the newly-old turns, and what the conversation file keeps
+        # so a restart does not lose it.
+        self.summary = summary
         self.compactions += 1
         self.last_prompt_tokens = 0
 

@@ -26,10 +26,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .fs import atomic_write_text
+
 log = logging.getLogger(__name__)
 
 MAX_TITLE = 52
 UNSAVED_TITLE = "New chat"
+
+#: The archive is the record, not the prompt, so it is allowed to be far longer
+#: than anything that goes near the context window. It still has to stop
+#: somewhere: past this many messages the oldest are dropped, and the count is
+#: recorded on the file so the drop is at least visible rather than silent.
+MAX_TRANSCRIPT_MESSAGES = 500
 
 
 def _now() -> str:
@@ -82,6 +90,13 @@ class Conversation:
     updated_at: str
     messages: list[dict[str, Any]] = field(default_factory=list)
     last_reply: str = ""
+    #: What the older, un-windowed turns added up to. Compaction rewrites the
+    #: working context into this sentence, and it has to survive the turn that
+    #: produced it — otherwise the next compaction summarises an already-shortened
+    #: history and the beginning of the conversation is gone twice over.
+    summary: str = ""
+    #: How many of the oldest messages were trimmed to stay under the cap.
+    trimmed_messages: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -90,10 +105,18 @@ class Conversation:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "last_reply": self.last_reply,
+            "summary": self.summary,
+            "trimmed_messages": self.trimmed_messages,
             "messages": self.messages,
         }
 
-    def summary(self) -> dict[str, Any]:
+    def list_entry(self) -> dict[str, Any]:
+        """The sidebar row: enough to draw the list without shipping the chat.
+
+        This used to be called ``summary``, which collided with the compaction
+        summary field added below — the method shadowed the dataclass default, so
+        every save tried to serialise a function.
+        """
         return {
             "id": self.id,
             "title": self.title,
@@ -111,7 +134,16 @@ class Conversation:
             updated_at=str(data.get("updated_at") or _now()),
             messages=_messages_from(data.get("messages", [])),
             last_reply=str(data.get("last_reply") or ""),
+            summary=str(data.get("summary") or ""),
+            trimmed_messages=_count(data.get("trimmed_messages")),
         )
+
+
+def _count(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 class ConversationStore:
@@ -136,7 +168,7 @@ class ConversationStore:
             except (OSError, ValueError) as exc:
                 log.warning("skipping %s: %s", path.name, exc)
         conversations.sort(key=lambda item: item.updated_at, reverse=True)
-        return [item.summary() for item in conversations]
+        return [item.list_entry() for item in conversations]
 
     def get(self, conversation_id: str) -> Conversation | None:
         path = self._path(conversation_id)
@@ -163,13 +195,8 @@ class ConversationStore:
     def save(self, conversation: Conversation) -> None:
         self.ensure()
         conversation.updated_at = _now()
-        path = self._path(conversation.id)
-        # Write a sibling file, then rename. A crash mid-write must not leave a
-        # truncated conversation, and the rename is atomic on the same volume.
         payload = json.dumps(conversation.to_dict(), indent=2, ensure_ascii=False) + "\n"
-        temporary = path.with_name(f"{path.name}.tmp")
-        temporary.write_text(payload)
-        temporary.replace(path)
+        atomic_write_text(self._path(conversation.id), payload)
 
     def delete(self, conversation_id: str) -> bool:
         path = self._path(conversation_id)

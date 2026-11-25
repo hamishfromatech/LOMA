@@ -12,24 +12,34 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from .fs import atomic_write_text
+
 log = logging.getLogger(__name__)
 
-EMPTY: dict[str, Any] = {
-    "mcpServers": {},
-}
+
+def empty() -> dict[str, Any]:
+    """A fresh, unshared empty config.
+
+    This used to be a module constant copied with ``dict(EMPTY)`` — a *shallow*
+    copy, so every caller got the *same* inner ``mcpServers`` dict. Adding a
+    server for one path mutated the global, and a later read of any other
+    missing path returned that server. Callers add and remove entries, so this
+    has to be built fresh every time.
+    """
+    return {"mcpServers": {}}
 
 
 def read_raw(path: Path) -> dict[str, Any]:
     """The file exactly as written, placeholders and comments intact."""
     if not path.exists():
-        return dict(EMPTY)
+        return empty()
     try:
         data = json.loads(path.read_text())
     except (OSError, ValueError) as exc:
         log.warning("could not read %s: %s", path, exc)
-        return dict(EMPTY)
+        return empty()
     if not isinstance(data, dict):
-        return dict(EMPTY)
+        return empty()
     data.setdefault("mcpServers", {})
     if not isinstance(data["mcpServers"], dict):
         data["mcpServers"] = {}
@@ -37,8 +47,7 @@ def read_raw(path: Path) -> dict[str, Any]:
 
 
 def write_raw(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    atomic_write_text(path, json.dumps(data, indent=2) + "\n")
 
 
 def servers(path: Path) -> dict[str, dict[str, Any]]:
