@@ -256,22 +256,6 @@ class SkillStore:
             return None
         return best[1]
 
-    def as_index(self) -> str:
-        """The always-on note: what skills exist and when to reach for one.
-
-        Returns an empty string when nothing is installed, so a project without
-        skills carries no tokens for them.
-        """
-        skills = self.scan()
-        if not skills:
-            return ""
-        # One line, names only. A 0.8B model that is handed a paragraph of
-        # meta-instruction about its own skills starts answering the instruction
-        # instead of the question — the descriptions live in the tool schema,
-        # where they belong.
-        names = ", ".join(skill.name for skill in skills)
-        return f"Skills available through load_skill: {names}."
-
     def as_context(self, name: str) -> str:
         """The loaded skill, framed so a 0.8B model follows it as instructions."""
         body = self.load(name)

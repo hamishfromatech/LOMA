@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -111,7 +111,7 @@ def completed_state(answers: dict[str, Any], stored: int) -> dict[str, Any]:
         "onboarded": True,
         "skipped": False,
         "name": _clean(answers.get("name")),
-        "completed_at": date.today().isoformat(),
+        "completed_at": datetime.now(timezone.utc).date().isoformat(),
         "facts_stored": stored,
     }
 
@@ -121,6 +121,6 @@ def skipped_state() -> dict[str, Any]:
         "onboarded": True,
         "skipped": True,
         "name": "",
-        "completed_at": date.today().isoformat(),
+        "completed_at": datetime.now(timezone.utc).date().isoformat(),
         "facts_stored": 0,
     }

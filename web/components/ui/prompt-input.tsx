@@ -155,10 +155,20 @@ function PromptInputTextarea({
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const meta = e.metaKey || e.ctrlKey
+    // Cmd+Enter / Ctrl+Enter → send (even with multi-line)
+    if (e.key === "Enter" && meta) {
+      e.preventDefault()
+      onSubmit?.()
+      return
+    }
+    // Enter + no Shift → send
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault()
       onSubmit?.()
+      return
     }
+    // Shift+Enter → new line (default textarea behaviour — do nothing)
     onKeyDown?.(e)
   }
 

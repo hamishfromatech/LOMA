@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
-from datetime import date
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .fs import atomic_write_text
@@ -87,7 +87,10 @@ class MemoryStore:
             if fact.lower() in existing:
                 return False
 
-            line = f"- {fact} _({date.today().isoformat()}, {source})_\n"
+            # Use UTC for the date stamp so it matches the conversation
+            # created_at timestamps (also UTC), avoiding mixed-clock confusion.
+            _utc_now = datetime.now(timezone.utc).date()
+            line = f"- {fact} _({_utc_now.isoformat()}, {source})_\n"
             text = self.read()
             if not text.endswith("\n"):
                 text += "\n"

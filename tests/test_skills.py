@@ -77,7 +77,6 @@ def test_underscore_and_dot_folders_are_ignored(tmp_path):
 def test_missing_directory_is_not_an_error(tmp_path):
     store = SkillStore(tmp_path / "nope")
     assert store.scan() == []
-    assert store.as_index() == ""
 
 
 # -- lookup ------------------------------------------------------------
@@ -122,16 +121,6 @@ def test_long_bodies_are_truncated_with_a_pointer(tmp_path):
 
 
 # -- prompt shapes -----------------------------------------------------
-def test_index_lists_every_skill_and_mentions_the_tool(tmp_path):
-    write_skill(tmp_path, "a", frontmatter="---\nname: alpha\ndescription: First one.\n---", body="x")
-    write_skill(tmp_path, "b", frontmatter="---\nname: beta\ndescription: Second one.\n---", body="x")
-    index = SkillStore(tmp_path).as_index()
-    assert "load_skill" in index
-    # Names only: hand a 0.8B model a paragraph about its own skills and it
-    # starts answering that instead of the question. Descriptions live in the
-    # tool schema, where they are only paid for when the tool is considered.
-    assert "alpha, beta" in index
-    assert "First one." not in index
 
 
 def test_context_frames_the_body_as_instructions(tmp_path):

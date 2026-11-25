@@ -289,6 +289,11 @@ export function ChatView() {
         event.preventDefault()
         setChatsOpen((value) => !value)
       }
+      // Cmd+Shift+K / Ctrl+Shift+K → close the drawer
+      if (meta && event.key.toLowerCase() === "k" && event.shiftKey) {
+        event.preventDefault()
+        setChatsOpen(false)
+      }
       if (event.key === "Escape" && busy) {
         event.preventDefault()
         stopTurn()

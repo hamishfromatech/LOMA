@@ -297,6 +297,11 @@ export function Composer({
           send
           <span className="text-loma-faint/40">·</span>
           <kbd className="rounded border border-loma-line bg-white/[0.04] px-1 py-px text-[9px] text-loma-dim">
+            ⌘↵
+          </kbd>
+          send
+          <span className="text-loma-faint/40">·</span>
+          <kbd className="rounded border border-loma-line bg-white/[0.04] px-1 py-px text-[9px] text-loma-dim">
             ⇧↵
           </kbd>
           new line

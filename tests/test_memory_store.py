@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import datetime, timezone
 
 from loma.memory_store import HEADER, MemoryStore
 
@@ -15,7 +15,7 @@ def test_append_writes_one_bullet(tmp_path):
     assert store.append("Keeps a note file by hand") is True
     facts = store.facts()
     assert facts == ["Keeps a note file by hand"]
-    assert date.today().isoformat() in store.read()
+    assert datetime.now(timezone.utc).date().isoformat() in store.read()
 
 
 def test_append_is_idempotent(tmp_path):
