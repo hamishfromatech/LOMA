@@ -282,6 +282,13 @@ export function ChatView() {
     setOnboarding({ needed: false, name: "" })
   }, [])
 
+  const stopTurn = useCallback(() => {
+    abort.current?.abort()
+    stop()
+    void stopConversation(activeId!).catch(() => undefined)
+    setBusy(false)
+  }, [activeId, stop])
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const meta = event.metaKey || event.ctrlKey
@@ -545,13 +552,6 @@ export function ChatView() {
     },
     [activeId, attachments, busy, enqueue, refreshConversations, refreshStatus, unlock, voiceOn],
   )
-
-  const stopTurn = useCallback(() => {
-    abort.current?.abort()
-    stop()
-    void stopConversation(activeId!).catch(() => undefined)
-    setBusy(false)
-  }, [activeId, stop])
 
   const currentModel = models.find((item) => item.name === settings?.llm_model)
   const visionEnabled =
