@@ -7,12 +7,15 @@ network — importing this module is free.
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from loma.context import context_window_for_ram
 from loma.preferences import load_preferences
+
+log = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------
 # Defaults
@@ -46,6 +49,10 @@ def _env(name: str, default):
     try:
         return type(default)(raw)
     except (TypeError, ValueError):
+        log.warning(
+            "Ignoring invalid %s=%r — expected %s; falling back to %r",
+            name, raw, type(default).__name__, default,
+        )
         return default
 
 
