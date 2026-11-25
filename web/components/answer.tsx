@@ -105,7 +105,7 @@ export function AnswerMessage({ message }: { message: ChatMessage }) {
         )}
 
         {message.content && (
-          <div className={cn("loma-prose", message.streaming && "loma-caret")} aria-live="polite">
+          <div className={cn("loma-prose", message.streaming && "loma-caret")}>
             <Markdown>{message.content}</Markdown>
           </div>
         )}

@@ -18,13 +18,17 @@ import {
   completeOnboarding,
   createConversation,
   deleteConversation,
+  getDraft,
   getOnboarding,
   getConversation,
   getSettings,
   getStatus,
+  getLastConversation,
   listConversations,
   listModels,
   renameConversation,
+  rememberConversation,
+  setDraft,
   skipOnboarding,
   streamChat,
   stopConversation,
@@ -235,6 +239,20 @@ export function ChatView() {
   }, [])
 
   useEffect(() => {
+    // Restore the last conversation the user was on.
+    const lastId = getLastConversation()
+    if (lastId) {
+      setActiveId(lastId)
+      void getConversation(lastId)
+        .then((conv) => {
+          setMessages(fromConversation(conv))
+        })
+        .catch(() => undefined)
+    }
+    // Restore draft text.
+    const draft = getDraft()
+    if (draft) setInput(draft)
+
     void refreshStatus()
     void refreshConversations()
     void refreshModels()
@@ -271,11 +289,15 @@ export function ChatView() {
         event.preventDefault()
         setChatsOpen((value) => !value)
       }
+      if (event.key === "Escape" && busy) {
+        event.preventDefault()
+        stopTurn()
+      }
       if (event.key === "Escape") setChatsOpen(false)
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
-  }, [])
+  }, [busy, stopTurn])
 
   const openConversation = useCallback(
     async (id: string) => {
@@ -284,6 +306,7 @@ export function ChatView() {
       try {
         const conversation = await getConversation(id)
         setActiveId(conversation.id)
+        rememberConversation(conversation.id)
         setMessages(fromConversation(conversation))
         setChatsOpen(false)
         setError(null)
@@ -300,6 +323,7 @@ export function ChatView() {
     setActiveId(null)
     setMessages([])
     setInput("")
+    setDraft("")
     setError(null)
     setChatsOpen(false)
   }, [stop])
@@ -510,6 +534,7 @@ export function ChatView() {
       } finally {
         abort.current = null
         setBusy(false)
+        setDraft("")
         void refreshConversations()
       }
     },
@@ -606,7 +631,10 @@ export function ChatView() {
 
               <Composer
                 value={input}
-                onValueChange={setInput}
+                onValueChange={(text) => {
+                  setInput(text)
+                  setDraft(text)
+                }}
                 onSubmit={() => void send(input)}
                 busy={busy}
                 onStop={stopTurn}
@@ -692,7 +720,10 @@ export function ChatView() {
               <div className="mx-auto w-full max-w-[760px]">
                 <Composer
                   value={input}
-                  onValueChange={setInput}
+                  onValueChange={(text) => {
+                    setInput(text)
+                    setDraft(text)
+                  }}
                   onSubmit={() => void send(input)}
                   busy={busy}
                   onStop={stopTurn}

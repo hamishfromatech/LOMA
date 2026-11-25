@@ -11,6 +11,50 @@ import type {
   StreamEvent,
 } from "./types"
 
+// ---------------------------------------------------------------------------
+// Storage helpers (wrappers around localStorage with graceful fallback)
+// ---------------------------------------------------------------------------
+
+const KEY_LAST_CONVERSATION = "loma:last_conversation"
+const KEY_DRAFT = "loma:draft"
+
+export function getLastConversation(): string | null {
+  try {
+    const v = localStorage.getItem(KEY_LAST_CONVERSATION)
+    return v || null
+  } catch {
+    return null
+  }
+}
+
+export function rememberConversation(id: string): void {
+  try {
+    localStorage.setItem(KEY_LAST_CONVERSATION, id)
+  } catch {
+    /* localStorage full or blocked */
+  }
+}
+
+export function getDraft(): string {
+  try {
+    return localStorage.getItem(KEY_DRAFT) ?? ""
+  } catch {
+    return ""
+  }
+}
+
+export function setDraft(text: string): void {
+  try {
+    if (text) {
+      localStorage.setItem(KEY_DRAFT, text)
+    } else {
+      localStorage.removeItem(KEY_DRAFT)
+    }
+  } catch {
+    /* localStorage full or blocked */
+  }
+}
+
 export const API_BASE =
   process.env.NEXT_PUBLIC_LOMA_API ?? "http://127.0.0.1:5050"
 
