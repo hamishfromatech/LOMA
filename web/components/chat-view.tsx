@@ -381,7 +381,6 @@ export function ChatView() {
     async (model: string) => {
       try {
         setSettings(await updateSettings({ llm_model: model }))
-        setModels((current) => current.map((item) => item))
         void refreshStatus()
       } catch {
         setError("could not switch the model")
