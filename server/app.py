@@ -104,11 +104,15 @@ def create_app() -> Flask:
     # cannot change the status; those are reported as an ``error`` event.
     @app.errorhandler(HTTPException)
     def http_error(exc: HTTPException) -> Response:
-        payload = {"error": exc.description or exc.name}
-        if exc.status_code == 413:
+        # Werkzeug HTTP exceptions use `code` (int) on newer versions.
+        # Flask's HTTPException also exposes `status_code` as an alias.
+        code = getattr(exc, "code", 500)
+        if code == 413:
             limit = app.config["MAX_CONTENT_LENGTH"] / (1024 * 1024)
-            payload["error"] = f"request body too large (limit {limit:.0f} MB)"
-        return jsonify(payload), exc.status_code
+            payload = {"error": f"request body too large (limit {limit:.0f} MB)"}
+        else:
+            payload = {"error": exc.description or exc.name}
+        return jsonify(payload), code
 
     @app.errorhandler(Exception)
     def unexpected_error(exc: Exception) -> Response:

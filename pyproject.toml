@@ -34,8 +34,8 @@ web = ["flask>=3.0"]
 [project.scripts]
 loma = "loma.cli:main"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.setuptools]
+packages = ["loma", "server"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
