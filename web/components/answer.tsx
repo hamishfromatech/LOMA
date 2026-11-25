@@ -163,9 +163,13 @@ export const AnswerMessage = React.memo(function AnswerMessage({ message }: { me
   a.message.id === b.message.id &&
   a.message.content === b.message.content &&
   a.message.tools.length === b.message.tools.length &&
+  a.message.tools.every((tool, index) => tool.id === b.message.tools[index]?.id && tool.status === b.message.tools[index]?.status) &&
   a.message.streaming === b.message.streaming &&
   a.message.error === b.message.error &&
-  a.message.truncated === b.message.truncated)
+  a.message.truncated === b.message.truncated &&
+  a.message.memory === b.message.memory &&
+  a.message.intent === b.message.intent &&
+  a.message.matched === b.message.matched)
 
 export const UserMessage = React.memo(function UserMessage({ message }: { message: ChatMessage }) {
   // The image is not persisted with the conversation, so it survives exactly as
