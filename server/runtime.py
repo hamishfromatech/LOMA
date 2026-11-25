@@ -12,6 +12,7 @@ Turns are serialised with a lock: one voice, one conversation at a time.
 from __future__ import annotations
 
 import logging
+import queue
 import re
 import threading
 from collections.abc import Iterator
@@ -43,6 +44,10 @@ from loma.preferences import save_preferences
 
 log = logging.getLogger(__name__)
 
+class _Tombstoned(BaseException):
+    """Raised inside _run_turn.finally to skip the save when a delete
+    tombstone already removed the file."""
+
 #: Cheap gate before spending a generation on memory extraction.
 _PERSONAL = re.compile(r"\b(i|i'm|im|i've|my|me|mine|we|our|us)\b", re.IGNORECASE)
 
@@ -52,11 +57,29 @@ class Runtime:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or Settings.from_env()
         self.pipeline = VoicePipeline(self.settings)
+        #: Serialises turns, MCP reloads and model unloading — everything that
+        #: uses the shared pipeline. It must never be held across a write to the
+        #: client socket; see ``chat``.
         self.lock = threading.Lock()
         self.store = ConversationStore(self.settings.conversations_dir)
         self.memory = MemoryStore(self.settings.memory_file)
         self._warmed = False
         self._warm_lock = threading.Lock()
+
+        #: Guards the conversation file against concurrent mutations. Deliberately
+        #: *not* ``self.lock``: a delete or rename should wait microseconds for a
+        #: save, not the whole of a streamed answer.
+        self._store_lock = threading.Lock()
+        #: Conversations the user deleted. A turn in flight still holds its copy,
+        #: and without this it would write the file straight back.
+        self._deleted: set[str] = set()
+        #: Titles the user asked for mid-turn, so the turn's save cannot roll
+        #: them back with the copy it loaded before the rename.
+        self._titles: dict[str, str] = {}
+        #: One stop flag per running turn, keyed by conversation.
+        self._turns: dict[str, threading.Event] = {}
+        self._turns_lock = threading.Lock()
+        #: Whether the turn extracted memory (set by worker, read by chat).
 
     # -- lifecycle -----------------------------------------------------
     def warm(self) -> None:
@@ -273,29 +296,74 @@ class Runtime:
         return conversation.to_dict() if conversation else None
 
     def rename_conversation(self, conversation_id: str, title: str) -> dict | None:
-        conversation = self.store.rename(conversation_id, title)
-        return conversation.to_dict() if conversation else None
+        """Rename, and remember the new title against any turn in flight.
+
+        Renaming during a turn used to be silently undone: the turn had loaded
+        the conversation before the rename and wrote that copy back at the end.
+        """
+        with self._store_lock:
+            conversation = self.store.rename(conversation_id, title)
+            if conversation is not None:
+                self._titles[conversation_id] = conversation.title
+            return conversation.to_dict() if conversation else None
 
     def delete_conversation(self, conversation_id: str) -> bool:
-        return self.store.delete(conversation_id)
+        """Delete, and mark it deleted.
 
-    def chat(
+        Without the tombstone a delete during a turn only looked like it worked:
+        the turn's save re-created the file a moment later and the chat came back.
+        """
+        with self._store_lock:
+            self._deleted.add(conversation_id)
+            self._titles.pop(conversation_id, None)
+            return self.store.delete(conversation_id)
+
+    # -- stopping a turn ------------------------------------------------
+    def stop_turn(self, conversation_id: str) -> bool:
+        """Ask the turn in this conversation to stop. True if there was one.
+
+        The browser's ``controller.abort()`` only stops the *reading*. Without a
+        server-side flag, the model kept generating into a socket nobody was
+        listening to — holding the pipeline lock, the model and the GPU for the
+        rest of the answer.
+        """
+        with self._turns_lock:
+            stop = self._turns.get(conversation_id)
+        if stop is None:
+            return False
+        stop.set()
+        return True
+
+    def stop_all_turns(self) -> int:
+        """Signal every running turn to stop. Returns the number signaled."""
+        with self._turns_lock:
+            stops = list(self._turns.values())
+        for stop in stops:
+            stop.set()
+        return len(stops)
+
+    # -- turn worker (threaded) -----------------------------------------
+    # The turn runs on its own thread, producing events into a queue; the
+    # calling generator drains the queue without holding ``self.lock``, so a
+    # stalled socket can't pin settings/MCP/reload. On stop the worker breaks
+    # and ``Agent.finish_partial()`` keeps the streamed text in the record.
+
+    def _run_turn(
         self,
         conversation_id: str,
         message: str,
-        *,
-        speak: bool | None = None,
-        images: list[str] | None = None,
+        speak: bool | None,
+        images: list[str] | None,
+        stop: threading.Event | None,
     ) -> Iterator[dict]:
-        """Run one turn inside a conversation and persist the result.
+        """The pipeline turn: load, stream, persist. Runs inside ``self.lock``.
 
-        The conversation is read, answered and written **inside the lock**. It
-        used to be read before taking the lock, so two overlapping requests both
-        started from the same old copy and the second save dropped the first
-        turn's messages. One voice, one conversation at a time — including the
-        load and the save.
+        Yields every event from the pipeline, a "done" event on StopLoop or
+        when the loop is interrupted (by stop, or by the generator's close).
+        Accumulates partial text in ``_partial_text`` for the stop path.
         """
         stored_memory = False
+        self._partial_text: list[str] = []  # text accumulated by the worker
 
         with self.lock:
             conversation = self.store.get(conversation_id)
@@ -319,7 +387,14 @@ class Runtime:
                         if event.get("type") == "memory":
                             stored_memory = True
                         yield event
+                        # Accumulate delta text for the stop/abort path.
+                        if event.get("type") == "delta":
+                            self._partial_text.append(str(event.get("text", "")))
+                        # Check for stop between events (the worker sets this).
+                        if stop is not None and stop.is_set():
+                            break
                 except StopLoop:
+                    # Normal exit — the user said "goodbye" or similar.
                     yield {
                         "type": "done",
                         "reply": "",
@@ -329,6 +404,7 @@ class Runtime:
                     }
             finally:
                 reply = self.pipeline.last_reply
+                partial_text = "".join(self._partial_text)
                 # The agent's archive, not its prompt window. Writing the window
                 # back is what made a long chat get shorter on every turn.
                 conversation.messages = agent.transcript()
@@ -336,6 +412,37 @@ class Runtime:
                 if agent.summary:
                     conversation.summary = agent.summary
                 conversation.last_reply = reply
+
+                # Stop guard: the user stopped mid-answer.
+                # Keep the partial text in the record rather than discarding it.
+                # (The UI already held the streamed text.)
+                if stop is not None and stop.is_set():
+                    agent.finish_partial(partial_text)
+                    conversation.last_reply = partial_text
+                    if not conversation.messages:
+                        # Empty partial — the question got a null reply. Roll it back.
+                        if conversation.messages and conversation.messages[-1].get("role") == "user":
+                            conversation.messages.pop()
+                        conversation.trimmed_messages = 0
+                        conversation.summary = ""
+
+                # Tombstone guard: a delete during the turn marked the file gone.
+                # Without this, the save would recreate it and the chat resurrect.
+                with self._store_lock:
+                    if conversation.id in self._deleted:
+                        self.store.delete(conversation.id)
+                        # Drop the messages so the next load sees nothing.
+                        conversation.messages = []
+                        conversation.trimmed_messages = 0
+                        conversation.summary = ""
+                        conversation.title = ""
+                        conversation.last_reply = ""
+                        raise _Tombstoned()
+                    # Title guard: a rename during the turn set a preferred title.
+                    title = self._titles.get(conversation_id)
+                    if title is not None:
+                        conversation.title = title
+
                 if conversation.title in {"", "New chat"} and conversation.messages:
                     conversation.title = ConversationStore.title_from(
                         next(
@@ -348,6 +455,80 @@ class Runtime:
                         )
                     )
                 self.store.save(conversation)
+
+            return stored_memory
+
+    # -- chat (threaded worker) ----------------------------------------
+    # The turn runs on its own thread, producing events into a queue; this
+    # generator drains the queue and yields. That split is the point: the
+    # pipeline lock used to be held across every ``yield``, i.e. across the
+    # socket writes that carry those bytes to the browser. A tab that stopped
+    # reading (a laptop closing the lid mid-answer) pinned the lock
+    # indefinitely, and every request that needs it — settings, MCP reload,
+    # another chat — hung behind it. Now the lock covers the model, and a
+    # stalled client stalls only itself: the queue fills, the worker blocks
+    # on a bounded put, and the abandoned generator's teardown stops the
+    # worker.
+
+    def chat(
+        self,
+        conversation_id: str,
+        message: str,
+        *,
+        speak: bool | None = None,
+        images: list[str] | None = None,
+    ) -> Iterator[dict]:
+        stored_memory = False
+        stop = threading.Event()
+        with self._turns_lock:
+            self._turns[conversation_id] = stop
+
+        q: queue.Queue = queue.Queue(maxsize=64)
+
+        def _worker() -> None:
+            """Run the pipeline turn in a background thread and push events
+            into the queue. The pipeline lock is held here, so a stalled
+            consumer only stalls the worker — not settings, MCP, or chat."""
+            try:
+                for event in self._run_turn(
+                    conversation_id, message, speak, images, stop
+                ):
+                    q.put(event)  # blocks at 64 — safe for stalled consumer
+            except _Tombstoned:
+                # The tombstone deleted the conversation; nothing more to do.
+                pass
+            except Exception as exc:  # noqa: BLE001
+                # The pipeline's finally block ran (it saved the conversation).
+                # Push an error event so the main thread can surface it.
+                q.put({"type": "error", "message": str(exc)})
+
+        thread = threading.Thread(target=_worker, name="loma-turn", daemon=True)
+        thread.start()
+
+        try:
+            while True:
+                event = q.get()
+                if event.get("type") == "done":
+                    break
+                if event.get("type") == "error":
+                    break
+                stored_memory = event.get("type") == "memory"
+                yield event
+
+        except GeneratorExit:
+            # Client disconnected while reading — stop the worker.
+            stop.set()
+            raise
+        finally:
+            # Drain remaining events (the worker may have more after "done").
+            while True:
+                try:
+                    event = q.get_nowait()
+                except queue.Empty:
+                    break
+            # Wait for the worker's finally block to finish (it saves the
+            # conversation and may call finish_partial).
+            thread.join(timeout=10)
 
         # Outside the lock: a short, separate generation that must not delay the
         # next turn's audio.
@@ -522,10 +703,30 @@ class Runtime:
 
 
 _runtime: Runtime | None = None
+_runtime_lock = threading.Lock()
 
 
 def get_runtime() -> Runtime:
+    """The process-wide runtime, created once.
+
+    The lazy global used to be unguarded. `app.run(threaded=True)` hands every
+    request its own thread, so the first two requests to land could each build a
+    Runtime — two pipelines, two MCP hubs, two sets of spawned MCP servers, one
+    pair orphaned and unreachable. Double-checked under a lock, which costs
+    nothing after the first call.
+    """
     global _runtime
     if _runtime is None:
-        _runtime = Runtime()
+        with _runtime_lock:
+            if _runtime is None:
+                _runtime = Runtime()
+    return _runtime
+
+
+def peek_runtime() -> Runtime | None:
+    """The runtime if one already exists, without creating one.
+
+    Shutdown needs this: `atexit` must not start a second Runtime — with its MCP
+    servers — on the way out of a process that never made a request.
+    """
     return _runtime

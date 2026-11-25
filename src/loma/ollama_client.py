@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -26,6 +27,22 @@ MAX_SPEECH_CHARS = 4000
 
 #: Extra completion budget granted when thinking is requested.
 THINKING_ALLOWANCE = 768
+
+#: What ``model_info`` reports for a model it could not inspect.
+_UNKNOWN_MODEL: dict[str, Any] = {
+    "capabilities": [],
+    "parameters": "",
+    "family": "",
+    "voices": [],
+    "thinking": None,
+    "context_length": 0,
+    "runner": "",
+}
+
+#: How long to believe a failed ``/api/show`` before probing again. Long enough
+#: that an unhappy endpoint is not re-probed twice per turn, short enough that a
+#: model which comes back to life is noticed inside a minute.
+_FAILED_PROBE_COOLDOWN_SECONDS = 60.0
 
 
 def human_parameters(raw: str) -> str:
@@ -105,6 +122,10 @@ class OllamaClient:
             timeout=httpx.Timeout(timeout, connect=5.0),
         )
         self._detail_cache: dict[str, dict[str, Any]] = {}
+        #: When a ``/api/show`` probe failed, when to try again. Failures are
+        #: cached too (for less time than successes) because an unhealthy
+        #: ``/api/show`` otherwise costs two 10-second probes on *every* turn.
+        self._probe_retries_at: dict[str, float] = {}
 
     # -- lifecycle -----------------------------------------------------
     def close(self) -> None:
@@ -223,21 +244,17 @@ class OllamaClient:
         cached = self._detail_cache.get(model)
         if cached is not None:
             return cached
+        if self._probe_retries_at.get(model, 0.0) > time.monotonic():
+            return dict(_UNKNOWN_MODEL)
 
-        empty = {
-            "capabilities": [],
-            "parameters": "",
-            "family": "",
-            "voices": [],
-            "thinking": None,
-            "context_length": 0,
-            "runner": "",
-        }
+        empty = dict(_UNKNOWN_MODEL)
         try:
             response = self._http.post("/api/show", json={"model": model}, timeout=10)
         except httpx.HTTPError:
+            self._probe_retries_at[model] = time.monotonic() + _FAILED_PROBE_COOLDOWN_SECONDS
             return empty
         if not response.is_success:
+            self._probe_retries_at[model] = time.monotonic() + _FAILED_PROBE_COOLDOWN_SECONDS
             return empty
 
         payload = response.json()
@@ -267,6 +284,7 @@ class OllamaClient:
             "runner": details.get("runner", ""),
         }
         self._detail_cache[model] = found
+        self._probe_retries_at.pop(model, None)
         return found
 
     def capabilities(self, model: str) -> list[str]:
@@ -340,6 +358,7 @@ class OllamaClient:
         """
         if not model:
             return
+        self._probe_retries_at.pop(model, None)
         try:
             self._http.post("/api/generate", json={"model": model, "keep_alive": 0})
         except httpx.HTTPError as exc:
@@ -347,6 +366,7 @@ class OllamaClient:
         else:
             # The next /api/show must not be served a stale capability answer.
             self._detail_cache.pop(model, None)
+            self._probe_retries_at.pop(model, None)
 
     def has_model(self, name: str) -> bool:
         """True when ``name`` appears in the local model list."""
@@ -418,7 +438,15 @@ class OllamaClient:
             for line in response.iter_lines():
                 if not line.strip():
                     continue
-                chunk = json.loads(line)
+                try:
+                    chunk = json.loads(line)
+                except ValueError:
+                    # A half-line is a keepalive or a socket that closed mid
+                    # write, not a broken answer. Raising here turned a transient
+                    # Ollama hiccup into "Expecting value: line 1 column 1"
+                    # printed in the chat bubble, which no user can act on.
+                    log.warning("skipping unreadable stream line: %.80s", line)
+                    continue
                 if error := chunk.get("error"):
                     raise OllamaError(str(error))
                 message = chunk.get("message") or {}

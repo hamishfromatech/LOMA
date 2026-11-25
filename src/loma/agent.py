@@ -355,6 +355,21 @@ class Agent:
         self._trim()
         self._drop_images()
 
+    def finish_partial(self, reply: str, tool_trace: list[dict[str, Any]] | None = None) -> None:
+        """Record an answer that was stopped part-way, and close the turn.
+
+        Stop is not "nothing happened". The user read those words and the model
+        is already done with them, so the partial answer belongs in the record —
+        and the question has to be followed by *something*, or the next turn
+        reads a dangling user message with no reply under it.
+
+        Called when the generation loop is abandoned (the user pressed Stop),
+        where ``_end_turn`` would otherwise never run and the answer would be
+        lost while the question survived.
+        """
+        self._end_turn(reply, {"done_reason": "stopped"}, tool_trace)
+        self.last_finish_reason = "stopped"
+
     def respond(
         self,
         user_text: str,

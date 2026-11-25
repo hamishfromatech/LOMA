@@ -16,22 +16,54 @@ time — no second implementation of a turn.
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
 import shlex
 import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
 
 from flask import Flask, Response, jsonify, request, stream_with_context
+from werkzeug.exceptions import HTTPException
 
 from server.images import MAX_BODY_BYTES, read_images
 
-from .runtime import get_runtime
+from .runtime import get_runtime, peek_runtime
 
 log = logging.getLogger(__name__)
 
 WEB_ORIGINS = {"http://localhost:3000", "http://127.0.0.1:3000"}
+
+#: The only host names this server will answer to.
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+#: Audio containers the transcriber (ffmpeg under faster-whisper) can be relied
+#: on to open. A filename comes from the client, and letting it be anything
+#: meant an absurd suffix reached ``mkstemp`` and raised ``OSError``.
+AUDIO_SUFFIXES = {".webm", ".wav", ".mp3", ".m4a", ".ogg", ".flac", ".aac", ".mp4"}
+
+
+def _host_is_local(header_value: str) -> bool:
+    """True for a loopback host, with or without a port."""
+    host = (header_value or "").strip().lower()
+    if host.startswith("["):
+        # Bracketed IPv6 literal, "[::1]:5050".
+        return host.partition("]")[0].lstrip("[") in LOCAL_HOSTS
+    return host.rpartition(":")[0] in LOCAL_HOSTS
+
+
+def configure_logging() -> None:
+    """Set up logging. Called by :func:`serve`, *not* by ``create_app``.
+
+    Configuring the root logger at import time hijacks the logging of anything
+    that imports this module — tests and any embedder included.
+    """
+    logging.basicConfig(
+        level=os.getenv("LOMA_LOG_LEVEL", "INFO"),
+        format="%(levelname)s %(name)s: %(message)s",
+    )
 
 
 def create_app() -> Flask:
@@ -42,10 +74,49 @@ def create_app() -> Flask:
     # validator that would have given a readable error ever ran.
     app.config["MAX_CONTENT_LENGTH"] = max(32 * 1024 * 1024, MAX_BODY_BYTES)
 
-    logging.basicConfig(
-        level=os.getenv("LOMA_LOG_LEVEL", "INFO"),
-        format="%(levelname)s %(name)s: %(message)s",
-    )
+    # -- who may talk to this server ----------------------------------
+    # Binding to 127.0.0.1 is not the boundary people think it is. A page on the
+    # internet can point its DNS at 127.0.0.1 (rebinding), and the browser then
+    # treats http://evil.com as same-origin with the app: no CORS, no preflight,
+    # and the Host header is whatever the attacker chose. From there it can read
+    # /api/memory and /api/conversations, and — because POST /api/mcp/servers
+    # writes a command that is then *executed* on reload — run arbitrary code.
+    # So: only answer requests addressed to loopback, and only accept an Origin
+    # that is itself loopback (that covers the Next dev server on :3000 and this
+    # server's own origin, and rules out any site on the internet).
+    @app.before_request
+    def guard_loopback() -> Response | None:
+        if not _host_is_local(request.host):
+            log.warning("refused request with Host %r", request.host)
+            return jsonify({"error": "this server only answers on localhost"}), 403
+
+        origin = request.headers.get("Origin", "")
+        if origin and not _host_is_local(urlparse(origin).hostname or ""):
+            log.warning("refused request from Origin %r", origin)
+            return jsonify({"error": f"origin not allowed: {origin}"}), 403
+        return None
+
+    # -- errors as JSON ------------------------------------------------
+    # Every route here is consumed by ``response.json()``. A Flask HTML error
+    # page arrives as "SyntaxError: Unexpected token '<'" in the UI, which is
+    # how a perfectly clear "your body is too large" or "no such conversation"
+    # becomes a mystery. Note that a failure *after* the SSE body has started
+    # cannot change the status; those are reported as an ``error`` event.
+    @app.errorhandler(HTTPException)
+    def http_error(exc: HTTPException) -> Response:
+        payload = {"error": exc.description or exc.name}
+        if exc.status_code == 413:
+            limit = app.config["MAX_CONTENT_LENGTH"] / (1024 * 1024)
+            payload["error"] = f"request body too large (limit {limit:.0f} MB)"
+        return jsonify(payload), exc.status_code
+
+    @app.errorhandler(Exception)
+    def unexpected_error(exc: Exception) -> Response:
+        # Logged in full, described in general: Ollama's messages and our own
+        # tracebacks quote URLs and absolute paths, and they were being printed
+        # verbatim into the chat bubble.
+        log.exception("unhandled error on %s %s", request.method, request.path)
+        return jsonify({"error": "the server could not complete that request"}), 500
 
     @app.after_request
     def cors(response: Response) -> Response:
@@ -280,7 +351,9 @@ def create_app() -> Flask:
         if upload is None:
             return jsonify({"error": "audio file is required"}), 400
 
-        suffix = Path(upload.filename or "clip.webm").suffix or ".webm"
+        suffix = (Path(upload.filename or "clip.webm").suffix or ".webm").lower()
+        if suffix not in AUDIO_SUFFIXES:
+            return jsonify({"error": f"unsupported audio type {suffix!r}"}), 400
         handle, path = tempfile.mkstemp(suffix=suffix)
         os.close(handle)
         try:
@@ -317,11 +390,70 @@ def create_app() -> Flask:
         get_runtime().reset()
         return jsonify({"ok": True})
 
+    @app.post("/api/conversations/<id>/stop")
+    def stop_turn(id: str) -> Response:
+        """Stop the turn in this conversation.
+
+        The browser sends this when the user clicks the stop button. The
+        old ``stopTurn`` only called ``controller.abort()`` on the SSE
+        reader — the model kept generating into a closed socket, holding
+        the pipeline lock and GPU for the entire answer. Now the server
+        receives a stop signal, the worker breaks from the pipeline loop,
+        and ``Agent.finish_partial()`` keeps whatever text was streamed
+        into the conversation record.
+        """
+        runtime = get_runtime()
+        signaled = runtime.stop_turn(id)
+        return jsonify({"ok": True, "signaled": signaled})
+
     @app.get("/healthz")
-    def healthz() -> Response:
-        return jsonify({"ok": True})
+    def healthz() -> tuple[Response, int]:
+        """Whether LOMA can actually answer, not whether the process is alive.
+
+        The old unconditional ``{"ok": true}`` told a supervisor everything was
+        fine while Ollama was down and every turn was failing.
+        """
+        runtime = get_runtime()
+        try:
+            version = runtime.pipeline.client.health().get("version", "")
+        except Exception as exc:  # noqa: BLE001 - health must always answer
+            return jsonify({"ok": False, "ollama": str(exc)}), 503
+        return (
+            jsonify(
+                {
+                    "ok": True,
+                    "ollama": version,
+                    "warmed": runtime.ready,
+                    "tools": len(runtime.pipeline.hub.tools),
+                }
+            ),
+            200,
+        )
 
     return app
+
+
+def serve() -> None:
+    """Run the API. This is what ``python -m server.app`` and ``make api`` do."""
+    configure_logging()
+
+    # Ctrl-C on `make api` used to leave every MCP server process LOMA had
+    # spawned behind, because Runtime.close() had no callers. atexit covers the
+    # clean exit and the interpreter-shutting-down case alike.
+    atexit.register(_shutdown)
+
+    port = int(os.getenv("LOMA_PORT", "5050"))
+    create_app().run(host="127.0.0.1", port=port, threaded=True, debug=False)
+
+
+def _shutdown() -> None:
+    runtime = peek_runtime()
+    if runtime is None:
+        return
+    try:
+        runtime.close()
+    except Exception as exc:  # noqa: BLE001 - shutdown must never raise
+        log.debug("runtime shutdown: %s", exc)
 
 
 def _stream_turn(
@@ -360,9 +492,5 @@ def sse(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
-app = create_app()
-
-
 if __name__ == "__main__":
-    port = int(os.getenv("LOMA_PORT", "5050"))
-    app.run(host="127.0.0.1", port=port, threaded=True, debug=False)
+    serve()

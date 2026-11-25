@@ -326,6 +326,10 @@ class MCPHub:
         self._client = None
         self._tools: list[MCPTool] = []
         self._started = False
+        #: Whether ``__aenter__`` got far enough to own something that has to be
+        #: closed. Tracked separately from ``_started`` because a *failed* connect
+        #: is exactly the case that leaves a subprocess behind.
+        self._entered = False
         self.last_error = ""
 
     # -- lifecycle -----------------------------------------------------
@@ -357,6 +361,11 @@ class MCPHub:
         except Exception as exc:  # noqa: BLE001 - a bad server must not kill LOMA
             self.last_error = f"{type(exc).__name__}: {exc}"
             log.warning("MCP startup failed: %s", self.last_error)
+            # Closing the client is what terminates the servers it spawned. Just
+            # dropping the runner killed the loop and left the children — so every
+            # failed reload from Settings orphaned an npx or python process until
+            # reboot, and repeated failures piled up.
+            self._release_client()
             self._shutdown_runner()
             return False
 
@@ -375,17 +384,30 @@ class MCPHub:
         return self.available
 
     async def _connect(self):
+        self._entered = True
         await self._client.__aenter__()
         return await self._client.list_tools()
 
     def stop(self) -> None:
-        if self._client is not None and self._runner is not None and self._started:
+        self._release_client()
+        self._shutdown_runner()
+        self._started = False
+
+    def _release_client(self) -> None:
+        """Close the FastMCP client, and with it every server process it started.
+
+        ``_entered`` is set before ``__aenter__`` rather than after: if it failed
+        partway, the stdio children it had already spawned are the ones that need
+        reaping, and a flag that only becomes true on success guarantees they are
+        left running.
+        """
+        if self._client is not None and self._runner is not None and self._entered:
             try:
                 self._runner.run(self._client.__aexit__(None, None, None), timeout=10)
             except Exception as exc:  # noqa: BLE001
-                log.debug("MCP shutdown: %s", exc)
-        self._shutdown_runner()
-        self._started = False
+                log.debug("MCP client release: %s", exc)
+        self._client = None
+        self._entered = False
 
     def _shutdown_runner(self) -> None:
         if self._runner is not None:
