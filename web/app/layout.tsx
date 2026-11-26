@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next"
+import type { ReactNode } from "react"
 import { Geist, Geist_Mono } from "next/font/google"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { ToastProvider } from "@/lib/toast"
@@ -24,7 +25,7 @@ export const viewport: Viewport = {
   themeColor: "#0b0b0a",
 }
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html
       lang="en"

@@ -172,6 +172,48 @@ loma speak "hello" -o hello.wav
 A ChatGPT/Open-WebUI-shaped interface built on
 [prompt-kit](https://www.prompt-kit.com) components over a Flask API.
 
+### Working in the UI
+
+```bash
+cd web
+npm install                    # once
+npm run dev                    # dev server
+npm run lint                   # eslint
+npm run build                  # production build (typecheck included)
+```
+
+No `npx` on the local machine — run the gates with the repo's own binaries:
+
+```bash
+cd web
+./node_modules/.bin/tsc --noEmit      # typecheck
+./node_modules/.bin/eslint .          # lint
+```
+
+Layout:
+
+- `app/` — Next.js routes (`/` for the chat, `/settings` for the settings page,
+  `layout.tsx` for the shell and the skip link).
+- `components/` — the feature components (`chat-view.tsx`, `settings-view.tsx`,
+  `sidebar.tsx`, `composer.tsx`, `mic-button.tsx`, `answer.tsx`, …) and `ui/`
+  for the shared primitives (`chat-container.tsx`, `markdown.tsx`, `code-block.tsx`,
+  `skeleton.tsx`, `tool-cards.tsx`, `loader.tsx`).
+- `lib/` — `api.ts` (typed fetch layer; it **raises** on non-2xx, callers decide,
+  and bundles the localStorage conversation/remembered-model helpers), `types.ts`
+  (shared types), `toast.tsx` (the `useToast()` / `<ToastProvider>` system),
+  `use-prefers-reduced-motion.ts`, `tool-ui.ts`, and `utils.ts` (`cn` helper).
+- `next.config.ts` — `X-Frame-Options: DENY`, `nosniff`, `no-referrer` and a CSP.
+  `connect-src` permits the local API (`127.0.0.1:5050` / `localhost:5050`); if you
+  rehost `NEXT_PUBLIC_LOMA_API` at build time, update both the CSP and the dev proxy.
+
+Conventions: keep transient action failures as toasts (`useToast()`), keep
+loading states as skeletons, keep `aria-live` attributes on regions that update,
+and prefer `next/link` over bare anchors for navigation. A copy-button fails
+loudly; it does not fail silently.
+
+There is no frontend test runner yet — the gates are `tsc`, `eslint` and
+`next build`, which is what `make lint` runs locally.
+
 - **Icon rail + conversation drawer** (`⌘K`) — every chat is a JSON file,
   grouped by Today / Yesterday / Previous 7 days, searchable, renameable,
   deletable.
