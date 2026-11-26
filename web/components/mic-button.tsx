@@ -121,7 +121,7 @@ export function MicButton({ onTranscript, disabled, className }: Props) {
         className={cn(
           "size-8 rounded-full transition-colors",
           recording
-            ? "bg-loma-danger/15 text-loma-danger hover:bg-loma-danger/25"
+            ? "bg-loma-danger/15 text-loma-danger ring-2 ring-loma-danger/40 ring-offset-0 hover:bg-loma-danger/25"
             : "text-loma-dim hover:bg-white/[0.06] hover:text-loma-ink",
         )}
       >

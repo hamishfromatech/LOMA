@@ -14,6 +14,10 @@ import {
   ChatContainerScrollAnchor,
 } from "@/components/ui/chat-container"
 import { ScrollButton } from "@/components/ui/scroll-button"
+import { Skeleton } from "@/components/ui/skeleton"
+import { useToast } from "@/lib/toast"
+import { useStickToBottomContext } from "use-stick-to-bottom"
+import { usePrefersReducedMotion } from "@/lib/use-prefers-reduced-motion"
 import {
   completeOnboarding,
   createConversation,
@@ -213,7 +217,33 @@ function StatusPill({
   )
 }
 
+export function FadeTop() {
+  const { scrollRef } = useStickToBottomContext()
+  const [hasContentAbove, setHasContentAbove] = useState(false)
+
+  useEffect(() => {
+    const node = scrollRef.current
+    if (!node) return
+    const check = () => setHasContentAbove(node.scrollTop > 2)
+    check()
+    node.addEventListener("scroll", check, { passive: true })
+    return () => node.removeEventListener("scroll", check)
+  }, [scrollRef])
+
+  return (
+    <div
+      aria-hidden="true"
+      className={cn(
+        "pointer-events-none sticky top-0 z-[5] -mt-10 h-10 w-full bg-gradient-to-b from-loma-bg via-loma-bg/80 to-transparent transition-opacity duration-150",
+        hasContentAbove ? "opacity-100" : "opacity-0",
+      )}
+    />
+  )
+}
+
 export function ChatView() {
+  const reduceMotion = usePrefersReducedMotion()
+
   const [conversations, setConversations] = useState<ConversationSummary[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -301,6 +331,8 @@ export function ChatView() {
     setAttachments((current) => current.filter((item) => item.id !== id))
   }, [])
 
+  const toast = useToast()
+
   const refreshModels = useCallback(async () => {
     setModelsLoading(true)
     try {
@@ -310,11 +342,12 @@ export function ChatView() {
       // the selected chat model, so the attach button follows the API's answer.
       setAutoVision(Boolean(payload.vision))
     } catch {
-      /* keep the last known list rather than blanking the picker */
+      // Keep the last known list rather than blanking the picker, but say so.
+      toast({ title: "Could not refresh models", description: "The model picker may be stale." })
     } finally {
       setModelsLoading(false)
     }
-  }, [])
+  }, [toast])
 
   const refreshConversations = useCallback(async () => {
     setConversationsLoading(true)
@@ -487,10 +520,10 @@ export function ChatView() {
         .then((loaded) => setSettings(loaded))
         .catch(() => {
           setVoiceOn(previous)
-          setError("could not save the voice setting")
+          toast({ title: "Could not save the voice setting", description: "Spoken replies stayed as they were." })
         })
     },
-    [voiceOn],
+    [voiceOn, toast],
   )
 
   const changeModel = useCallback(
@@ -499,10 +532,10 @@ export function ChatView() {
         setSettings(await updateSettings({ llm_model: model }))
         void refreshStatus()
       } catch {
-        setError("could not switch the model")
+        toast({ title: "Could not switch the model", description: "The picker will not reflect that change." })
       }
     },
-    [refreshStatus],
+    [refreshStatus, toast],
   )
 
   const send = useCallback(
@@ -754,12 +787,11 @@ export function ChatView() {
         </header>
 
         {opening ? (
-          <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-4 pb-16">
-            <div className="flex flex-col items-center gap-3 text-loma-faint">
-              <Loader2 className="size-5 animate-spin" />
-              <p className="font-mono text-[11px] uppercase tracking-[0.16em]">
-                loading conversation…
-              </p>
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-4 pb-16" role="status" aria-label="Loading conversation">
+            <div className="w-full max-w-[640px] space-y-4" aria-hidden="true">
+              <Skeleton className="ml-auto h-10 w-[80%]" />
+              <Skeleton className="h-16 w-[55%]" />
+              <Skeleton className="h-16 w-[75%]" />
             </div>
           </div>
         ) : empty ? (
@@ -863,7 +895,11 @@ export function ChatView() {
         ) : (
           <>
             <div className="relative min-h-0 flex-1">
-              <ChatContainerRoot className="flex h-full flex-col overflow-y-auto">
+              <ChatContainerRoot
+                resize={reduceMotion ? "instant" : "smooth"}
+                className="flex h-full flex-col overflow-y-auto"
+              >
+                <FadeTop />
                 <ChatContainerContent className="mx-auto w-full max-w-[760px] space-y-8 px-4 pb-6 pt-2 sm:px-6">
                   {messages.map((message) =>
                     message.role === "user" ? (

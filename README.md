@@ -450,7 +450,10 @@ src/loma/
   audio.py           microphone, VAD, speaker thread
   control.py         deterministic stop/reset/repeat/remember/exit lexicon
   tool_router.py     Needle 3 triage (tools or not) + a diagnostic route
+  mcp_config.py      mcp.json parsing and validation
   mcp_hub.py         FastMCP client bridge (sync over async)
+  fs.py              atomic file writes
+  onboarding.py      first-run prompts and memory facts
   agent.py           conversation state + auto-compaction
   pipeline.py        the end-to-end turn, as an event stream
   conversations.py   chat history on disk
@@ -465,7 +468,7 @@ web/                 Next.js + prompt-kit UI
 examples/            a demo MCP server
 skills/              SKILL.md instructions, loaded on demand
 scripts/             setup, model download, memory benchmark
-tests/               153 tests, no network required
+tests/               331 tests, no network required
 docs/                architecture, RAM, student labs, troubleshooting
 ```
 
@@ -564,22 +567,22 @@ only place that should know the endpoint shapes.
   `loma bench` and `scripts/bench_memory.py`. If you change a model, a window or a
   thread, re-run them and update [`docs/RAM_BUDGET.md`](docs/RAM_BUDGET.md) — don't
   eyeball it.
-- **Add a test with the change.** 153 tests run in 0.17s; there is no excuse not
+- **Add a test with the change.** 331 tests run in ~1s; there is no excuse not
   to. A fast suite is a feature.
 - **Leave the offline promise intact.** Nothing may fetch at runtime. New
   dependencies that phone home are a design break, not a detail.
-- **Small modules.** The largest file is 687 lines. If yours would be the biggest,
-  split it.
+- **Small modules.** The largest file is ~1070 lines (pipeline.py). If yours would be
+  the biggest, split it.
 
 ## Tests
 
-The whole suite is **153 tests in under a second**, and it needs no network, no
+The whole suite is **331 tests in under a second**, and it needs no network, no
 models and no Ollama. That is deliberate: the parts worth testing are the parts
 that decide things — the control lexicon, Needle's routing, compaction, the
 memory store — not the model weights.
 
 ```bash
-make test    # 153 tests, no network, no models required
+make test    # 331 tests, no network, no models required
 make lint    # ruff over src, tests and server, plus eslint in web/
 ```
 
@@ -589,7 +592,7 @@ what it actually uses:
 
 ```bash
 pip install pytest numpy httpx psutil
-pytest                    # 135 passed
+pytest                    # 331 passed
 ```
 
 `pythonpath = ["src"]` is set in `pyproject.toml`, so a plain `pytest` works

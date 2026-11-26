@@ -1,5 +1,7 @@
 "use client"
 
+import { SkeletonRows } from "@/components/ui/skeleton"
+
 import { LomaMark } from "@/components/brand"
 import { Badge } from "@/components/ui/badge"
 import { Button, buttonVariants } from "@/components/ui/button"
@@ -335,10 +337,10 @@ export function SettingsView() {
       )
     }
     return (
-      <div className="grid h-dvh place-items-center" role="status">
-        <div className="flex items-center gap-3 text-sm text-loma-faint">
-          <Loader2 className="size-4 animate-spin" />
-          loading settings…
+      <div className="grid h-dvh place-items-center p-6" role="status" aria-label="Loading settings">
+        <div className="w-full max-w-[560px]">
+          <SkeletonRows count={4} className="space-y-3" />
+          <SkeletonRows count={2} className="mt-6 space-y-3" />
         </div>
       </div>
     )

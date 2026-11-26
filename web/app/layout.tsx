@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next"
 import { Geist, Geist_Mono } from "next/font/google"
 import { TooltipProvider } from "@/components/ui/tooltip"
+import { ToastProvider } from "@/lib/toast"
 import "./globals.css"
 
 const geistSans = Geist({
@@ -37,7 +38,9 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         >
           Skip to content
         </a>
-        <TooltipProvider delay={200}>{children}</TooltipProvider>
+        <ToastProvider>
+          <TooltipProvider delay={200}>{children}</TooltipProvider>
+        </ToastProvider>
       </body>
     </html>
   )
