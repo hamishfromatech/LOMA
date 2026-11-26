@@ -40,7 +40,7 @@ function CodeBlockCode({
   ...props
 }: CodeBlockCodeProps) {
   const [highlightedHtml, setHighlightedHtml] = useState<string | null>(null)
-  const [copied, setCopied] = useState(false)
+  const [copied, setCopied] = useState<"ok" | "failed" | null>(null)
   const source = String(code ?? "").replace(/\n$/, "")
 
   useEffect(() => {
@@ -67,15 +67,16 @@ function CodeBlockCode({
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(source)
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1400)
+      setCopied("ok")
+      window.setTimeout(() => setCopied(null), 1400)
     } catch {
-      /* clipboard blocked — the code is still selectable */
+      setCopied("failed")
+      window.setTimeout(() => setCopied(null), 1400)
     }
   }
 
   return (
-    <div className={cn("w-full", className)} {...props}>
+    <section aria-label={`${language} code`} className={cn("w-full", className)} {...props}>
       <div className="flex items-center justify-between border-b border-loma-line-soft px-3 py-1.5">
         <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-loma-faint">
           {language}
@@ -83,11 +84,11 @@ function CodeBlockCode({
         <button
           type="button"
           onClick={() => void copy()}
-          aria-label={copied ? "Copied" : "Copy code"}
+          aria-label={copied ? (copied === "ok" ? "Copied" : "Copy failed") : "Copy code"}
           className="flex items-center gap-1.5 rounded-md px-1.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] text-loma-faint transition hover:bg-white/[0.06] hover:text-loma-ink"
         >
-          {copied ? <Check className="size-3 text-loma-ok" /> : <Copy className="size-3" />}
-          {copied ? "copied" : "copy"}
+          {copied === "ok" ? <Check className="size-3 text-loma-ok" /> : copied === "failed" ? <Copy className="size-3 text-loma-danger" /> : <Copy className="size-3" />}
+          {copied === "ok" ? "copied" : copied === "failed" ? "failed" : "copy"}
         </button>
       </div>
 
@@ -103,18 +104,8 @@ function CodeBlockCode({
           </pre>
         </div>
       )}
-    </div>
+    </section>
   )
 }
 
-export type CodeBlockGroupProps = React.HTMLAttributes<HTMLDivElement>
-
-function CodeBlockGroup({ children, className, ...props }: CodeBlockGroupProps) {
-  return (
-    <div className={cn("flex items-center justify-between", className)} {...props}>
-      {children}
-    </div>
-  )
-}
-
-export { CodeBlockGroup, CodeBlockCode, CodeBlock }
+export { CodeBlockCode, CodeBlock }

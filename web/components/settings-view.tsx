@@ -49,7 +49,7 @@ import {
 } from "lucide-react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 
 function plural(count: number, word: string) {
   return `${count} ${word}${count === 1 ? "" : "s"}`
@@ -107,6 +107,30 @@ export function SettingsView() {
 
   // memory editor
   const [memoryDraft, setMemoryDraft] = useState("")
+  const memoryDirty =
+    settings !== null && memoryDraft !== settings.memory.content
+  const rootRef = useRef<HTMLDivElement>(null)
+  const temperatureSaveTimeout = useRef<number | null>(null)
+
+  // Warn before navigating away with unsaved memory edits.
+  useEffect(() => {
+    if (!memoryDirty) return
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault()
+      event.returnValue = ""
+    }
+    window.addEventListener("beforeunload", onBeforeUnload)
+    return () => window.removeEventListener("beforeunload", onBeforeUnload)
+  }, [memoryDirty])
+
+  // Reset the save debounce when the temperature is saved through the other
+  // code path so a stale timer can't overwrite a newer value.
+  useEffect(() => () => {
+    if (temperatureSaveTimeout.current !== null) {
+      window.clearTimeout(temperatureSaveTimeout.current)
+      temperatureSaveTimeout.current = null
+    }
+  }, [])
 
   // Auto-clear the "confirm?" state after 3s so the user doesn't have to
   // rush-click the button.
@@ -141,8 +165,8 @@ export function SettingsView() {
   // proxy from assistive technology instead of leaving a phantom field.
   useEffect(() => {
     const mark = () => {
-      document
-        .querySelectorAll<HTMLInputElement>('input[id$="-hidden-input"]')
+      rootRef.current
+        ?.querySelectorAll<HTMLInputElement>('input[id$="-hidden-input"]')
         .forEach((element) => {
           element.setAttribute("aria-hidden", "true")
           element.tabIndex = -1
@@ -150,9 +174,9 @@ export function SettingsView() {
     }
     mark()
     const observer = new MutationObserver(mark)
-    observer.observe(document.body, { childList: true, subtree: true })
+    if (rootRef.current) observer.observe(rootRef.current, { childList: true, subtree: true })
     return () => observer.disconnect()
-  }, [])
+  }, [settings])
 
   const flashSaved = useCallback(() => {
     setSaved(true)
@@ -186,8 +210,14 @@ export function SettingsView() {
     setError(null)
     try {
       const blob = await previewVoice(voice)
-      const element = new Audio(URL.createObjectURL(blob))
-      await element.play()
+      const url = URL.createObjectURL(blob)
+      const element = new Audio(url)
+      const done = () => {
+        URL.revokeObjectURL(url)
+      }
+      element.onended = done
+      element.onerror = done
+      await element.play().catch(done)
     } catch {
       setError("could not play the preview")
     } finally {
@@ -289,13 +319,14 @@ export function SettingsView() {
       return (
         <div className="grid h-dvh place-items-center">
           <div className="text-center">
-            <p className="mb-4 text-sm text-loma-danger">{error}</p>
+            <p className="mb-4 text-sm text-loma-danger" role="alert">{error}</p>
             <button
+              type="button"
               className={cn(
                 buttonVariants({ variant: "ghost" }),
                 "text-sm text-loma-faint",
               )}
-              onClick={() => void getSettings().then(setSettings)}
+              onClick={() => void load()}
             >
               retry
             </button>
@@ -304,7 +335,7 @@ export function SettingsView() {
       )
     }
     return (
-      <div className="grid h-dvh place-items-center">
+      <div className="grid h-dvh place-items-center" role="status">
         <div className="flex items-center gap-3 text-sm text-loma-faint">
           <Loader2 className="size-4 animate-spin" />
           loading settings…
@@ -327,37 +358,58 @@ export function SettingsView() {
   )
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-4 pb-16">
+    <main id="loma-main" ref={rootRef} className="mx-auto w-full max-w-3xl px-4 pb-16">
       <div className="sticky top-0 z-20 -mx-4 mb-6 border-b border-loma-line-soft bg-loma-bg/85 px-4 py-3 backdrop-blur-md">
         <div className="flex items-center gap-3">
-          <Link
-            href="/"
-            aria-label="Back to chat"
-            className={cn(
-              buttonVariants({ variant: "ghost", size: "icon" }),
-              "size-8 text-loma-faint hover:bg-white/[0.06] hover:text-loma-ink",
-            )}
-          >
-            <ArrowLeft className="size-4" />
-          </Link>
+          {memoryDirty ? (
+            <button
+              type="button"
+              onClick={() => {
+                if (window.confirm("Discard unsaved memory changes and leave?")) {
+                  router.push("/")
+                }
+              }}
+              aria-label="Back to chat"
+              className={cn(
+                buttonVariants({ variant: "ghost", size: "icon" }),
+                "size-8 text-loma-faint hover:bg-white/[0.06] hover:text-loma-ink",
+              )}
+            >
+              <ArrowLeft className="size-4" />
+            </button>
+          ) : (
+            <Link
+              href="/"
+              aria-label="Back to chat"
+              className={cn(
+                buttonVariants({ variant: "ghost", size: "icon" }),
+                "size-8 text-loma-faint hover:bg-white/[0.06] hover:text-loma-ink",
+              )}
+            >
+              <ArrowLeft className="size-4" />
+            </Link>
+          )}
           <LomaMark size={26} />
           <div className="leading-none">
             <h1 className="font-mono text-[11px] uppercase tracking-[0.2em] text-loma-ink">
               Settings
             </h1>
-            <p className="mt-1.5 font-mono text-[9.5px] text-loma-faint">
+            <p className="mt-1.5 font-mono text-[9.5px] text-loma-dim">
               applied on the next turn, no restart
             </p>
           </div>
           <div
             className={cn(
               "ml-auto flex h-6 items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-loma-ok",
-              "transition-opacity duration-200",
               saved ? "opacity-100" : "opacity-0",
             )}
-            aria-live="polite"
+            aria-live="assertive"
           >
-            <Check className="size-3" /> saved
+            {saved && (
+              <>
+                <Check className="size-3" /> saved
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -399,7 +451,7 @@ export function SettingsView() {
               </SelectContent>
             </Select>
             {selectedModel && (
-              <p className="font-mono text-[10px] text-loma-faint">
+              <p className="font-mono text-[10px] text-loma-dim">
                 {[
                   selectedModel.parameters,
                   selectedModel.family,
@@ -436,7 +488,7 @@ export function SettingsView() {
                 ))}
               </SelectContent>
             </Select>
-            <p className="text-[11.5px] leading-relaxed text-loma-faint">
+            <p className="text-[11.5px] leading-relaxed text-loma-dim">
               {settings.dynamic_models
                 ? "An image turn switches to this model and unloads the language model first, so only one chat model sits in memory. It swaps back on the next text turn."
                 : "Dynamic model loading is off, so the language model answers everything. Turn it on with LOMA_DYNAMIC_MODELS=1 to swap this model in for images."}
@@ -471,26 +523,25 @@ export function SettingsView() {
               max={1}
               step={0.1}
               value={settings.temperature}
-              onChange={(event) =>
+              onChange={(event) => {
+                // Update the number live, but don't round-trip on every tick —
+                // the POST is debounced so a full drag is one request.
+                const next = Number(event.target.value)
                 setSettings((current) =>
-                  current
-                    ? { ...current, temperature: Number(event.target.value) }
-                    : current,
+                  current ? { ...current, temperature: next } : current,
                 )
-              }
-              onInput={(event) =>
-                void change({ temperature: Number((event.target as HTMLInputElement).value) })
-              }
-              onMouseUp={(event) =>
-                void change({ temperature: Number(event.currentTarget.value) })
-              }
-              onTouchEnd={(event) =>
-                void change({ temperature: Number(event.currentTarget.value) })
-              }
+                if (temperatureSaveTimeout.current !== null) {
+                  window.clearTimeout(temperatureSaveTimeout.current)
+                }
+                temperatureSaveTimeout.current = window.setTimeout(
+                  () => void change({ temperature: next }),
+                  350,
+                )
+              }}
               style={{ ["--fill" as string]: `${Number(settings.temperature) * 100}%` }}
               className="loma-range w-full"
             />
-            <p className="text-[11px] leading-relaxed text-loma-faint">
+            <p className="text-[11px] leading-relaxed text-loma-dim">
               Lower is more literal and repeats itself less. A small model starts
               narrating its own reasoning above about 0.3, and those words get
               spoken, so 0.2 is the default. Raise it if answers feel robotic.
@@ -519,6 +570,11 @@ export function SettingsView() {
                   sideOffset={6}
                   className="border border-loma-line p-1 shadow-2xl shadow-black/70"
                 >
+                  {settings.options.voices.length === 0 && (
+                    <div className="px-3 py-3 text-[11.5px] text-loma-faint">
+                      no voices reported by the speech model
+                    </div>
+                  )}
                   {settings.options.voices.map((voice) => (
                     <SelectItem key={voice} value={voice} className="pl-2.5">
                       {voice}
@@ -541,7 +597,7 @@ export function SettingsView() {
               Preview
             </Button>
           </div>
-          <p className="text-[11px] text-loma-faint">
+          <p className="text-[11px] text-loma-dim">
             The list comes from the speech model itself. Phonon adds named voices
             as it ships them; this build offers {settings.options.voices.length}.
           </p>
@@ -557,7 +613,7 @@ export function SettingsView() {
               <p className="text-[13px] text-loma-ink">
                 {settings.speak_replies ? "Speaking replies" : "Text only"}
               </p>
-              <p className="mt-1 max-w-md text-[11.5px] leading-relaxed text-loma-faint">
+              <p className="mt-1 max-w-md text-[11.5px] leading-relaxed text-loma-dim">
                 {settings.speak_replies
                   ? "Each sentence is sent to the voice model as it is written, so playback starts before the answer finishes."
                   : "Answers arrive as text only. Nothing is sent to the speech model, which keeps the turn a little faster and quieter."}
@@ -595,7 +651,7 @@ export function SettingsView() {
           <div className="flex flex-wrap items-center gap-2 text-xs text-loma-dim">
             <Brain className="size-4 text-loma-accent/80" />
             {plural(settings.memory.facts.length, "fact")} remembered
-            <span className="font-mono text-[10px] text-loma-faint">
+            <span className="font-mono text-[10px] text-loma-dim">
               {settings.memory.path}
             </span>
           </div>
@@ -606,12 +662,12 @@ export function SettingsView() {
             rows={10}
             spellCheck={false}
             aria-label="Memory contents"
-            className="w-full resize-y rounded-xl border border-loma-line bg-black/30 px-4 py-3 font-mono text-xs leading-relaxed text-loma-ink/85 outline-none placeholder:text-loma-faint/60 focus:border-loma-accent/40"
+            className="w-full resize-y rounded-xl border border-loma-line bg-black/30 px-4 py-3 font-mono text-xs leading-relaxed text-loma-ink/85 outline-none placeholder:text-loma-faint focus:border-loma-accent/40"
             placeholder="# LOMA memory&#10;&#10;- Prefers tea over coffee&#10;- Runs a 27B model at Q4 on 32 GB"
           />
 
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="max-w-sm text-[11px] leading-relaxed text-loma-faint">
+            <p className="max-w-sm text-[11px] leading-relaxed text-loma-dim">
               Edit it by hand, delete a line, or say{" "}
               <span className="text-loma-dim">“remember that …”</span> in chat.
               Auto-extraction is {settings.memory.auto_extract ? "on" : "off"}.
@@ -622,9 +678,12 @@ export function SettingsView() {
                 size="sm"
                 onClick={async () => {
                   setBusy("onboarding")
+                  setError(null)
                   try {
                     await resetOnboarding()
                     router.push("/")
+                  } catch (cause) {
+                    setError(cause instanceof Error ? cause.message : "could not reset setup")
                   } finally {
                     setBusy(null)
                   }
@@ -653,7 +712,7 @@ export function SettingsView() {
                 {busy === "memory-clear" ? (
                   <Loader2 className="size-3.5 animate-spin" />
                 ) : memoryConfirm ? (
-                  <Trash2 className="size-3.5" />
+                  <Check className="size-3.5" />
                 ) : (
                   <Trash2 className="size-3.5" />
                 )}
@@ -705,7 +764,7 @@ export function SettingsView() {
 
           <div className="space-y-2">
             {settings.mcp.servers.length === 0 && (
-              <p className="rounded-lg border border-dashed border-loma-line px-4 py-6 text-center text-xs text-loma-faint">
+              <p className="rounded-lg border border-dashed border-loma-line px-4 py-6 text-center text-xs text-loma-dim">
                 No servers configured yet.
               </p>
             )}
@@ -716,7 +775,7 @@ export function SettingsView() {
                 className="rounded-xl border border-loma-line bg-black/20 px-4 py-3"
               >
                 <div className="flex items-start gap-3">
-                  <Server className="mt-0.5 size-4 shrink-0 text-loma-faint" />
+                  <Server className="mt-0.5 size-4 shrink-0 text-loma-dim" />
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-mono text-sm text-loma-ink">
@@ -724,18 +783,18 @@ export function SettingsView() {
                       </span>
                       <Badge
                         variant="secondary"
-                        className="bg-white/[0.05] text-[10px] font-normal text-loma-faint"
+                        className="bg-white/[0.05] text-[10px] font-normal text-loma-dim"
                       >
                         {server.transport}
                       </Badge>
-                      <span className="flex items-center gap-1.5 font-mono text-[10px] text-loma-faint">
+                      <span className="flex items-center gap-1.5 font-mono text-[10px] text-loma-dim">
                         <StatusDot on={server.connected} />
                         {server.connected
                           ? plural(server.tools.length, "tool")
                           : "offline"}
                       </span>
                     </div>
-                    <p className="mt-1 truncate font-mono text-[11px] text-loma-faint">
+                    <p className="mt-1 truncate font-mono text-[11px] text-loma-dim">
                       {server.transport === "http"
                         ? server.url
                         : [server.command, ...server.args].join(" ")}
@@ -767,7 +826,7 @@ export function SettingsView() {
                     {busy === `remove-${server.name}` ? (
                       <Loader2 className="size-4 animate-spin" />
                     ) : mcpRemoveConfirm === server.name ? (
-                      <Trash2 className="size-4" />
+                      <Check className="size-4" />
                     ) : (
                       <Trash2 className="size-4" />
                     )}
@@ -872,12 +931,12 @@ export function SettingsView() {
                 onChange={(event) => setEnv(event.target.value)}
                 rows={2}
                 placeholder={'{"API_KEY": "..."}'}
-                className="w-full rounded-lg border border-loma-line bg-transparent px-3 py-2 font-mono text-xs text-loma-ink/90 outline-none placeholder:text-loma-faint/60 focus:border-loma-accent/40"
+                className="w-full rounded-lg border border-loma-line bg-transparent px-3 py-2 font-mono text-xs text-loma-ink/90 outline-none placeholder:text-loma-faint focus:border-loma-accent/40"
               />
             </div>
 
             <div className="flex items-center justify-between gap-3">
-              <p className="font-mono text-[10px] text-loma-faint/80">
+              <p className="font-mono text-[10px] text-loma-faint">
                 saved to {settings.mcp.path}
               </p>
               <Button
@@ -893,7 +952,7 @@ export function SettingsView() {
                 Add server
               </Button>
             </div>
-            <p className="text-[11px] leading-relaxed text-loma-faint">
+            <p className="text-[11px] leading-relaxed text-loma-dim">
               LOMA restarts the tool router after every change and rolls the file
               back if the server does not come up. <code>{"${LOMA_ROOT}"}</code> and{" "}
               <code>{"${LOMA_PYTHON}"}</code> are expanded when the server starts.
@@ -901,10 +960,10 @@ export function SettingsView() {
           </div>
         </Section>
 
-        <p className="pb-6 text-center font-mono text-[10px] text-loma-faint/80">
+        <p className="pb-6 text-center font-mono text-[10px] text-loma-dim">
           {settings.context.policy}
         </p>
       </div>
-    </div>
+    </main>
   )
 }

@@ -265,7 +265,7 @@ export function Onboarding({
                   placeholder="Your first name"
                   aria-label="Your name"
                   autoComplete="given-name"
-                  className="w-full rounded-xl border border-loma-line bg-black/25 px-3.5 py-3 text-[15px] text-loma-ink outline-none transition placeholder:text-loma-faint/60 focus:border-loma-accent/40"
+                  className="w-full rounded-xl border border-loma-line bg-black/25 px-3.5 py-3 text-[15px] text-loma-ink outline-none transition placeholder:text-loma-faint focus:border-loma-accent/40"
                 />
               )}
 
@@ -279,7 +279,7 @@ export function Onboarding({
                   rows={3}
                   placeholder="I run a small YouTube channel and write about hardware."
                   aria-label="What you are working on"
-                  className="w-full resize-none rounded-xl border border-loma-line bg-black/25 px-3.5 py-3 text-[15px] leading-relaxed text-loma-ink outline-none transition placeholder:text-loma-faint/60 focus:border-loma-accent/40"
+                  className="w-full resize-none rounded-xl border border-loma-line bg-black/25 px-3.5 py-3 text-[15px] leading-relaxed text-loma-ink outline-none transition placeholder:text-loma-faint focus:border-loma-accent/40"
                 />
               )}
 
@@ -322,7 +322,7 @@ export function Onboarding({
                       }}
                       placeholder="Something else…"
                       aria-label="Add your own goal"
-                      className="flex-1 rounded-xl border border-loma-line bg-black/25 px-3 py-2 text-[13px] text-loma-ink outline-none placeholder:text-loma-faint/60 focus:border-loma-accent/40"
+                      className="flex-1 rounded-xl border border-loma-line bg-black/25 px-3 py-2 text-[13px] text-loma-ink outline-none placeholder:text-loma-faint focus:border-loma-accent/40"
                     />
                     <button
                       type="button"
@@ -388,7 +388,7 @@ export function Onboarding({
                   rows={3}
                   placeholder="I read more than I listen, so written answers help. Keep it slow."
                   aria-label="Anything else LOMA should know"
-                  className="w-full resize-none rounded-xl border border-loma-line bg-black/25 px-3.5 py-3 text-[15px] leading-relaxed text-loma-ink outline-none transition placeholder:text-loma-faint/60 focus:border-loma-accent/40"
+                  className="w-full resize-none rounded-xl border border-loma-line bg-black/25 px-3.5 py-3 text-[15px] leading-relaxed text-loma-ink outline-none transition placeholder:text-loma-faint focus:border-loma-accent/40"
                 />
               )}
             </>

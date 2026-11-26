@@ -29,16 +29,3 @@ export function LomaMark({
     </span>
   )
 }
-
-export function Wordmark({ className }: { className?: string }) {
-  return (
-    <span
-      className={cn(
-        "font-mono text-[11px] uppercase tracking-[0.22em] text-loma-ink",
-        className,
-      )}
-    >
-      Loma
-    </span>
-  )
-}

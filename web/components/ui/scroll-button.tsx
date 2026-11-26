@@ -32,6 +32,9 @@ function ScrollButton({
         className
       )}
       onClick={() => scrollToBottom()}
+      disabled={isAtBottom}
+      aria-busy={!isAtBottom}
+      aria-label="Scroll to latest message"
       {...props}
     >
       <ChevronDown className="h-5 w-5" />

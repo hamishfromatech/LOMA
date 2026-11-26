@@ -114,7 +114,7 @@ export function Composer({
                   type="button"
                   onClick={() => onRemoveAttachment(attachment.id)}
                   aria-label="Remove image"
-                  className="absolute right-1 top-1 grid size-5 place-items-center rounded-full bg-black/70 text-loma-ink"
+                  className="absolute -right-1.5 -top-1.5 grid size-5 place-items-center rounded-full bg-black/80 text-loma-ink ring-2 ring-loma-surface focus-visible:outline-2 focus-visible:outline-loma-accent"
                 >
                   <X className="size-3" />
                 </button>
@@ -131,26 +131,33 @@ export function Composer({
           className={cn(
             "min-h-[46px] rounded-none border-0 bg-transparent px-2.5 py-1.5",
             "text-[15px] leading-relaxed text-loma-ink shadow-none",
-            "placeholder:text-loma-faint/85",
+            "placeholder:text-loma-faint",
             "focus-visible:border-0 focus-visible:ring-0 dark:bg-transparent",
           )}
         />
 
         <PromptInputActions className="justify-between px-0 pb-0 pt-0.5">
           <div className="flex items-center gap-1">
-            <FileUploadTrigger
-              aria-label={visionEnabled ? "Attach an image" : "This model cannot read images"}
-              title={visionEnabled ? "Attach an image" : "This model cannot read images"}
-              disabled={!visionEnabled}
-              className={cn(
-                "grid size-7 place-items-center rounded-full transition",
-                visionEnabled
-                  ? "text-loma-dim hover:bg-white/[0.06] hover:text-loma-ink"
-                  : "cursor-not-allowed text-loma-faint/40",
+            <span className="inline-flex items-center gap-2">
+              <FileUploadTrigger
+                aria-label={visionEnabled ? "Attach an image" : "This model cannot read images"}
+                title={visionEnabled ? "Attach an image" : "This model cannot read images"}
+                disabled={!visionEnabled}
+                className={cn(
+                  "grid size-8 place-items-center rounded-full transition",
+                  visionEnabled
+                    ? "text-loma-dim hover:bg-white/[0.06] hover:text-loma-ink"
+                    : "cursor-not-allowed text-loma-faint",
+                )}
+              >
+                <ImagePlus className="size-4" />
+              </FileUploadTrigger>
+              {!visionEnabled && (
+                <span className="hidden font-mono text-[10px] text-loma-faint md:inline">
+                  images need a vision model
+                </span>
               )}
-            >
-              <ImagePlus className="size-4" />
-            </FileUploadTrigger>
+            </span>
 
             <button
               type="button"
@@ -158,7 +165,7 @@ export function Composer({
               aria-pressed={voiceOn ?? false}
               aria-label={voiceOn ? "Spoken replies are on" : "Spoken replies are off"}
               className={cn(
-                "flex h-7 items-center gap-1.5 rounded-full px-2 font-mono text-[10.5px] uppercase tracking-[0.1em] transition",
+                "flex h-8 items-center gap-1.5 rounded-full px-2.5 font-mono text-[10.5px] uppercase tracking-[0.1em] transition",
                 voiceOn
                   ? "bg-loma-teal/10 text-loma-teal hover:bg-loma-teal/15"
                   : "text-loma-faint hover:bg-white/[0.06] hover:text-loma-dim",
@@ -200,7 +207,13 @@ export function Composer({
                   align="end"
                   className="w-[300px] border border-loma-line p-1 shadow-2xl shadow-black/70"
                 >
-                  {models.length === 0 && (
+                  {modelsLoading && (
+                    <div className="flex items-center gap-2 px-3 py-3 text-[11.5px] text-loma-faint">
+                      <RefreshCw className="size-3 animate-spin" />
+                      checking Ollama…
+                    </div>
+                  )}
+                  {!modelsLoading && models.length === 0 && (
                     <div className="px-3 py-3 text-[11.5px] leading-relaxed text-loma-faint">
                       No chat models found in Ollama.
                       <br />
@@ -244,9 +257,9 @@ export function Composer({
                         event.stopPropagation()
                         onRefreshModels()
                       }}
-                      className="flex items-center gap-1 rounded px-1 py-0.5 font-mono text-[9.5px] uppercase tracking-[0.12em] text-loma-faint transition hover:bg-white/[0.06] hover:text-loma-ink"
+                      className="flex min-h-[28px] items-center gap-1.5 rounded px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-loma-faint transition hover:bg-white/[0.06] hover:text-loma-ink"
                     >
-                      <RefreshCw className={cn("size-2.5", modelsLoading && "animate-spin")} />
+                      <RefreshCw className={cn("size-3", modelsLoading && "animate-spin")} />
                       rescan
                     </button>
                   </div>
@@ -289,23 +302,32 @@ export function Composer({
       </FileUploadContent>
       </FileUpload>
 
-      <div className="mt-2 flex items-center justify-between px-2.5 font-mono text-[10px] text-loma-faint/75">
-        <span className="hidden items-center gap-1.5 sm:flex">
-          <kbd className="rounded border border-loma-line bg-white/[0.04] px-1 py-px text-[9px] text-loma-dim">
-            ↵
-          </kbd>
-          send
-          <span className="text-loma-faint/40">·</span>
-          <kbd className="rounded border border-loma-line bg-white/[0.04] px-1 py-px text-[9px] text-loma-dim">
-            ⌘↵
-          </kbd>
-          send
-          <span className="text-loma-faint/40">·</span>
-          <kbd className="rounded border border-loma-line bg-white/[0.04] px-1 py-px text-[9px] text-loma-dim">
-            ⇧↵
-          </kbd>
-          new line
-        </span>
+      <div className="mt-2 flex items-center justify-between px-2.5 font-mono text-[10px] text-loma-faint">
+        {busy ? (
+          <span className="hidden items-center gap-1.5 sm:flex">
+            <kbd className="rounded border border-loma-line bg-white/[0.04] px-1 py-px text-[9px] text-loma-dim">
+              ⇧↵
+            </kbd>
+            new line
+            <span className="text-loma-faint">·</span>
+            <kbd className="rounded border border-loma-line bg-white/[0.04] px-1 py-px text-[9px] text-loma-dim">
+              ⌘↵
+            </kbd>
+            compose next
+          </span>
+        ) : (
+          <span className="hidden items-center gap-1.5 sm:flex">
+            <kbd className="rounded border border-loma-line bg-white/[0.04] px-1 py-px text-[9px] text-loma-dim">
+              ↵
+            </kbd>
+            send
+            <span className="text-loma-faint">·</span>
+            <kbd className="rounded border border-loma-line bg-white/[0.04] px-1 py-px text-[9px] text-loma-dim">
+              ⇧↵
+            </kbd>
+            new line
+          </span>
+        )}
         <span className="truncate">
           {settings
             ? `${Math.round(settings.context.window / 1024)}k context · offline`

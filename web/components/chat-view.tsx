@@ -52,7 +52,7 @@ import {
   MonitorSmartphone,
   Sparkles,
 } from "lucide-react"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useId, useRef, useState } from "react"
 
 const SUGGESTIONS = [
   {
@@ -103,15 +103,47 @@ function greeting() {
 }
 
 /** Small always-visible health readout. Click for the full budget. */
-function StatusPill({ status }: { status: Status | null }) {
+function StatusPill({
+  status,
+  failed,
+  onRetry,
+}: {
+  status: Status | null
+  failed: boolean
+  onRetry: () => void
+}) {
   const [open, setOpen] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation()
+        setOpen(false)
+        triggerRef.current?.focus()
+      }
+    }
+    panelRef.current?.focus()
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [open])
+
+  const statusLabelId = useId()
+  const close = () => {
+    setOpen(false)
+    triggerRef.current?.focus()
+  }
 
   return (
-    <div className="relative">
+    <div className="relative flex items-center gap-1">
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
+        aria-controls="loma-status-panel"
         aria-label="Runtime status"
         className={cn(
           "flex h-7 items-center gap-2 rounded-full border px-2.5 font-mono text-[10.5px] transition",
@@ -120,26 +152,52 @@ function StatusPill({ status }: { status: Status | null }) {
       >
         {status?.ready ? (
           <span className="size-1.5 rounded-full bg-loma-ok shadow-[0_0_6px] shadow-loma-ok/50" />
+        ) : failed ? (
+          <span className="size-1.5 rounded-full bg-loma-danger" aria-hidden="true" />
         ) : (
           <Loader2 className="size-3 animate-spin text-loma-faint" />
         )}
         <span className="tabular-nums text-loma-dim">
-          {status ? `${(status.models.total_mb / 1024).toFixed(1)} GB` : "…"}
+          {status ? `${(status.models.total_mb / 1024).toFixed(1)} GB` : failed ? "offline" : "…"}
         </span>
-        <span className="hidden text-loma-faint sm:inline">
-          {status ? status.config.llm_model : "connecting"}
-        </span>
+        {failed ? (
+          <span className="hidden text-loma-danger sm:inline">· retry</span>
+        ) : (
+          <span className="hidden text-loma-faint sm:inline">
+            {status ? status.config.llm_model : "connecting"}
+          </span>
+        )}
       </button>
 
+      {failed && (
+        <button
+          type="button"
+          onClick={onRetry}
+          className="ml-1 h-7 rounded-full border border-loma-line px-2.5 font-mono text-[10.5px] text-loma-dim transition hover:bg-white/[0.06] hover:text-loma-ink"
+        >
+          retry
+        </button>
+      )}
       {open && (
         <>
           <div
             className="fixed inset-0 z-40"
-            onClick={() => setOpen(false)}
+            onClick={close}
             aria-hidden
           />
-          <div className="absolute right-0 top-9 z-50 w-[min(92vw,420px)] rounded-xl border border-loma-line bg-loma-raise p-3 shadow-2xl shadow-black/70">
-            <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.16em] text-loma-faint">
+          <div
+            id="loma-status-panel"
+            ref={panelRef}
+            role="dialog"
+            aria-modal="false"
+            aria-labelledby={statusLabelId}
+            tabIndex={-1}
+            className="absolute right-0 top-9 z-50 w-[min(92vw,420px)] rounded-xl border border-loma-line bg-loma-raise p-3 shadow-2xl shadow-black/70 outline-none"
+          >
+            <p
+              id={statusLabelId}
+              className="mb-2 font-mono text-[10px] uppercase tracking-[0.16em] text-loma-faint"
+            >
               runtime
             </p>
             <StatusBar status={status} />
@@ -163,6 +221,7 @@ export function ChatView() {
   const [busy, setBusy] = useState(false)
   const [voiceOn, setVoiceOn] = useState<boolean | null>(null)
   const [status, setStatus] = useState<Status | null>(null)
+  const [statusFailed, setStatusFailed] = useState(false)
   const [settings, setSettings] = useState<SettingsPayload | null>(null)
   const [models, setModels] = useState<ModelOption[]>([])
   const [autoVision, setAutoVision] = useState(false)
@@ -170,46 +229,73 @@ export function ChatView() {
   const [modelsLoading, setModelsLoading] = useState(false)
   const [chatsOpen, setChatsOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [conversationsLoading, setConversationsLoading] = useState(true)
+  const [conversationsError, setConversationsError] = useState<string | null>(null)
+  const [opening, setOpening] = useState(false)
   const [hello, setHello] = useState("Hello")
   const [onboarding, setOnboarding] = useState<{
     needed: boolean
     name: string
   } | null>(null)
+  const [onboardingError, setOnboardingError] = useState<string | null>(null)
   const [justOnboarded, setJustOnboarded] = useState(false)
   const abort = useRef<AbortController | null>(null)
   const { enqueue, unlock, stop } = useAudioQueue()
+  const drawerTriggerRef = useRef<HTMLButtonElement | null>(null)
 
   useEffect(() => {
     setHello(greeting())
     void getOnboarding()
       .then((state) => setOnboarding({ needed: state.needed, name: state.name }))
-      .catch(() => setOnboarding({ needed: false, name: "" }))
+      .catch(() => {
+        setOnboarding({ needed: false, name: "" })
+        setOnboardingError("could not load the setup wizard")
+      })
   }, [])
 
   const refreshStatus = useCallback(async () => {
     try {
       setStatus(await getStatus())
+      setStatusFailed(false)
     } catch {
       setStatus(null)
+      setStatusFailed(true)
     }
   }, [])
 
-  const addAttachments = useCallback((files: File[]) => {
-    const images = files.filter((file) => file.type.startsWith("image/")).slice(0, 4)
-    for (const file of images) {
-      const reader = new FileReader()
-      reader.onload = () => {
-        const dataUrl = String(reader.result ?? "")
-        if (!dataUrl) return
-        setAttachments((current) =>
-          current.length >= 4
-            ? current
-            : [...current, { id: newId(), dataUrl }],
-        )
+  const addAttachments = useCallback(
+    (files: File[]) => {
+      const images = files.filter((file) => file.type.startsWith("image/"))
+      const dropped = files.length - images.length
+      if (dropped > 0) {
+        setError(`${dropped} file${dropped === 1 ? "" : "s"} ignored — only images attach`)
       }
-      reader.readAsDataURL(file)
-    }
-  }, [])
+      const room = Math.max(0, 4 - attachments.length)
+      const kept = images.slice(0, room)
+      if (images.length > room && room > 0) {
+        setError("only 4 images per turn — the rest were dropped")
+      } else if (room === 0 && files.length > 0) {
+        setError("already holding 4 images — remove one first")
+      }
+      for (const file of kept) {
+        const reader = new FileReader()
+        reader.onload = () => {
+          const dataUrl = String(reader.result ?? "")
+          if (!dataUrl) return
+          setAttachments((current) =>
+            current.length >= 4
+              ? current
+              : [...current, { id: newId(), dataUrl }],
+          )
+        }
+        reader.onerror = () => {
+          setError(`could not read ${file.name}`)
+        }
+        reader.readAsDataURL(file)
+      }
+    },
+    [attachments.length],
+  )
 
   const removeAttachment = useCallback((id: string) => {
     setAttachments((current) => current.filter((item) => item.id !== id))
@@ -231,23 +317,32 @@ export function ChatView() {
   }, [])
 
   const refreshConversations = useCallback(async () => {
+    setConversationsLoading(true)
+    setConversationsError(null)
     try {
       setConversations(await listConversations())
-    } catch {
-      /* the drawer is not worth an error banner */
+    } catch (cause) {
+      setConversationsError(cause instanceof Error ? cause.message : "could not load chats")
+    } finally {
+      setConversationsLoading(false)
     }
   }, [])
 
   useEffect(() => {
-    // Restore the last conversation the user was on.
+    // Restore the last conversation the user was on. The draft restore happens
+    // after the conversation load so a stale id can't paint a 404 on the hero.
     const lastId = getLastConversation()
     if (lastId) {
-      setActiveId(lastId)
       void getConversation(lastId)
         .then((conv) => {
+          setActiveId(conv.id)
           setMessages(fromConversation(conv))
         })
-        .catch(() => undefined)
+        .catch(() => {
+          rememberConversation("")
+          setActiveId(null)
+          setMessages([])
+        })
     }
     // Restore draft text.
     const draft = getDraft()
@@ -262,7 +357,7 @@ export function ChatView() {
         // The stored preference wins over the optimistic default.
         setVoiceOn(loaded.speak_replies)
       })
-      .catch(() => undefined)
+      .catch(() => setError("could not load settings — the model picker is hidden"))
     const timer = window.setInterval(refreshStatus, 10_000)
     return () => window.clearInterval(timer)
   }, [refreshStatus, refreshConversations, refreshModels])
@@ -287,17 +382,22 @@ export function ChatView() {
     stop()
     void stopConversation(activeId!).catch(() => undefined)
     setBusy(false)
+    // The stream throws on abort, so the assistant message would stay
+    // "streaming" forever — kill the caret and reveal Copy/Trace.
+    setMessages((current) =>
+      current.map((item) => (item.streaming ? { ...item, streaming: false } : item)),
+    )
   }, [activeId, stop])
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const meta = event.metaKey || event.ctrlKey
-      if (meta && event.key.toLowerCase() === "k") {
+      if (meta && event.key.toLowerCase() === "k" && !event.shiftKey) {
         event.preventDefault()
         setChatsOpen((value) => !value)
       }
       // Cmd+Shift+K / Ctrl+Shift+K → close the drawer
-      if (meta && event.key.toLowerCase() === "k" && event.shiftKey) {
+      else if (meta && event.key.toLowerCase() === "k" && event.shiftKey) {
         event.preventDefault()
         setChatsOpen(false)
       }
@@ -315,6 +415,7 @@ export function ChatView() {
     async (id: string) => {
       abort.current?.abort()
       stop()
+      setOpening(true)
       try {
         const conversation = await getConversation(id)
         setActiveId(conversation.id)
@@ -324,6 +425,8 @@ export function ChatView() {
         setError(null)
       } catch {
         setError("could not open that conversation")
+      } finally {
+        setOpening(false)
       }
     },
     [stop],
@@ -332,6 +435,7 @@ export function ChatView() {
   const newChat = useCallback(() => {
     abort.current?.abort()
     stop()
+    setOpening(false)
     setActiveId(null)
     setMessages([])
     setInput("")
@@ -342,16 +446,22 @@ export function ChatView() {
 
   const renameChat = useCallback(
     async (id: string, title: string) => {
+      const snapshot = conversations.find((item) => item.id === id)?.title
       setConversations((current) =>
         current.map((item) => (item.id === id ? { ...item, title } : item)),
       )
       try {
         await renameConversation(id, title)
       } catch {
+        if (snapshot !== undefined) {
+          setConversations((current) =>
+            current.map((item) => (item.id === id ? { ...item, title: snapshot } : item)),
+          )
+        }
         setError("could not rename that conversation")
       }
     },
-    [],
+    [conversations],
   )
 
   const removeChat = useCallback(
@@ -369,12 +479,18 @@ export function ChatView() {
 
   const toggleVoice = useCallback(
     (next: boolean) => {
+      // Optimistic: the button flips immediately, then reverts if the server
+      // rejects — a silent lie is worse than a flappy button.
+      const previous = voiceOn
       setVoiceOn(next)
       void updateSettings({ speak_replies: next })
-        .then(setSettings)
-        .catch(() => undefined)
+        .then((loaded) => setSettings(loaded))
+        .catch(() => {
+          setVoiceOn(previous)
+          setError("could not save the voice setting")
+        })
     },
-    [],
+    [voiceOn],
   )
 
   const changeModel = useCallback(
@@ -397,8 +513,6 @@ export function ChatView() {
 
       unlock()
       setError(null)
-      setInput("")
-      setAttachments([])
       setBusy(true)
       setChatsOpen(false)
 
@@ -414,6 +528,12 @@ export function ChatView() {
           return
         }
       }
+
+      // Only after the conversation exists do we clear the composer — a failed
+      // send must not destroy the user's text and attachments.
+      setInput("")
+      setAttachments([])
+
 
       const userMessage: ChatMessage = {
         id: newId(),
@@ -565,10 +685,12 @@ export function ChatView() {
 
   if (onboarding?.needed) {
     return (
-      <Onboarding
-        onComplete={finishOnboarding}
-        onSkip={skipSetup}
-      />
+      <main id="loma-main" className="contents">
+        <Onboarding
+          onComplete={finishOnboarding}
+          onSkip={skipSetup}
+        />
+      </main>
     )
   }
 
@@ -578,6 +700,8 @@ export function ChatView() {
         onNew={newChat}
         onToggleChats={() => setChatsOpen((open) => !open)}
         chatsOpen={chatsOpen}
+        onboardingName={onboarding?.name}
+        chatsButtonRef={drawerTriggerRef}
       />
 
       <ChatsDrawer
@@ -589,10 +713,29 @@ export function ChatView() {
         onSelect={(id) => void openConversation(id)}
         onDelete={(id) => void removeChat(id)}
         onRename={(id, title) => void renameChat(id, title)}
+        loading={conversationsLoading}
+        error={conversationsError}
+        onRetry={() => void refreshConversations()}
+        triggerRef={drawerTriggerRef}
       />
 
-      <div className="relative flex min-w-0 flex-1 flex-col">
-        {empty && (
+      <main id="loma-main" className="relative flex min-w-0 flex-1 flex-col">
+        {onboardingError && (
+          <div
+            role="status"
+            className="flex items-center gap-2 px-4 pt-2 text-[11.5px] text-loma-dim"
+          >
+            <p>{onboardingError}</p>
+            <button
+              type="button"
+              onClick={() => setOnboardingError(null)}
+              className="ml-auto rounded-md border border-loma-line px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em] text-loma-faint hover:text-loma-ink"
+            >
+              dismiss
+            </button>
+          </div>
+        )}
+        {empty && !opening && (
           <div
             aria-hidden
             className="pointer-events-none absolute inset-x-0 top-0 h-[440px] bg-[radial-gradient(58%_100%_at_50%_0%,rgba(227,168,92,0.055),transparent_72%)]"
@@ -603,10 +746,23 @@ export function ChatView() {
           <p className="min-w-0 flex-1 truncate text-[12.5px] text-loma-faint">
             {empty ? "" : activeTitle}
           </p>
-          <StatusPill status={status} />
+          <StatusPill
+            status={status}
+            failed={statusFailed}
+            onRetry={() => void refreshStatus()}
+          />
         </header>
 
-        {empty ? (
+        {opening ? (
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-4 pb-16">
+            <div className="flex flex-col items-center gap-3 text-loma-faint">
+              <Loader2 className="size-5 animate-spin" />
+              <p className="font-mono text-[11px] uppercase tracking-[0.16em]">
+                loading conversation…
+              </p>
+            </div>
+          </div>
+        ) : empty ? (
           <div className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto px-4 pb-16">
             <div className="w-full max-w-[720px]">
               <div className="mb-8 flex flex-col items-center text-center">
@@ -644,9 +800,14 @@ export function ChatView() {
                 onStop={stopTurn}
                 voiceOn={voiceOn}
                 onToggleVoice={() => toggleVoice(!voiceOn)}
-                onTranscript={(text) =>
+                onTranscript={(text) => {
                   setInput((prev) => prev + (prev ? " " : "") + text.trim())
-                }
+                  // Dictated text lands at the bottom; bring the composer into
+                  // view and focus the textarea so the user sees it.
+                  window.requestAnimationFrame(() =>
+                    document.getElementById("loma-prompt")?.focus(),
+                  )
+                }}
                 settings={settings}
                 models={models}
                 onModelChange={(model) => void changeModel(model)}
@@ -668,6 +829,7 @@ export function ChatView() {
                   {SUGGESTIONS.map((suggestion) => (
                     <button
                       key={suggestion.title}
+                      type="button"
                       onClick={() => void send(suggestion.prompt)}
                       className={cn(
                         "group flex items-start gap-2.5 rounded-xl border border-loma-line-soft bg-white/[0.015] px-3 py-2.5 text-left",
@@ -700,7 +862,7 @@ export function ChatView() {
           </div>
         ) : (
           <>
-            <main className="relative min-h-0 flex-1">
+            <div className="relative min-h-0 flex-1">
               <ChatContainerRoot className="flex h-full flex-col overflow-y-auto">
                 <ChatContainerContent className="mx-auto w-full max-w-[760px] space-y-8 px-4 pb-6 pt-2 sm:px-6">
                   {messages.map((message) =>
@@ -718,7 +880,7 @@ export function ChatView() {
                   <ScrollButton className="pointer-events-auto border border-loma-line bg-loma-raise text-loma-dim hover:text-loma-ink" />
                 </div>
               </ChatContainerRoot>
-            </main>
+            </div>
 
             <footer className="shrink-0 bg-gradient-to-t from-loma-bg via-loma-bg to-transparent px-4 pb-3 pt-2 sm:px-6">
               <div className="mx-auto w-full max-w-[760px]">
@@ -733,9 +895,12 @@ export function ChatView() {
                   onStop={stopTurn}
                   voiceOn={voiceOn}
                   onToggleVoice={() => toggleVoice(!voiceOn)}
-                  onTranscript={(text) =>
+                  onTranscript={(text) => {
                     setInput((prev) => prev + (prev ? " " : "") + text.trim())
-                  }
+                    window.requestAnimationFrame(() =>
+                      document.getElementById("loma-prompt")?.focus(),
+                    )
+                  }}
                   settings={settings}
                   models={models}
                   onModelChange={(model) => void changeModel(model)}
@@ -758,7 +923,7 @@ export function ChatView() {
             </footer>
           </>
         )}
-      </div>
+      </main>
     </div>
   )
 }

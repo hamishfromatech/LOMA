@@ -51,8 +51,8 @@ function Chip({
 export function StatusBar({ status, className }: Props) {
   if (!status) {
     return (
-      <div className={cn("flex items-center gap-2", className)}>
-        <Chip icon={<Cpu className="size-3" />} label="status" value="connecting" />
+      <div className={cn("flex items-center gap-2", className)} role="status">
+        <Chip icon={<Cpu className="size-3" />} label="status" value="offline" />
       </div>
     )
   }
@@ -83,13 +83,17 @@ export function StatusBar({ status, className }: Props) {
       <Tooltip>
         <TooltipTrigger
           render={
-            <div className="flex cursor-default items-center gap-2 rounded-full border border-loma-line bg-white/[0.03] px-2.5 py-1">
+            <button
+              type="button"
+              aria-label={`${tools} MCP tool${tools === 1 ? "" : "s"} — view tool list`}
+              className="flex cursor-default items-center gap-2 rounded-full border border-loma-line bg-white/[0.03] px-2.5 py-1 transition hover:bg-white/[0.06] focus-visible:bg-white/[0.06]"
+            >
               <Wrench className="size-3 text-loma-faint" />
               <span className="font-mono text-[10.5px] text-loma-faint">tools</span>
               <span className="font-mono text-[10.5px] tabular-nums text-loma-ink">
                 {tools}
               </span>
-            </div>
+            </button>
           }
         />
         <TooltipContent side="bottom" className="max-w-xs">

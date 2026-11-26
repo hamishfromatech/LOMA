@@ -70,16 +70,17 @@ const Trace = React.memo(function Trace({ metrics, intent, matched }: { metrics:
 }, (a, b) => a.metrics === b.metrics && a.intent === b.intent && a.matched === b.matched)
 
 export const AnswerMessage = React.memo(function AnswerMessage({ message }: { message: ChatMessage }) {
-  const [copied, setCopied] = useState(false)
+  const [copied, setCopied] = useState<"ok" | "failed" | null>(null)
 
   const copy = useCallback(async () => {
     if (!message.content) return
     try {
       await navigator.clipboard.writeText(message.content)
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1400)
+      setCopied("ok")
+      window.setTimeout(() => setCopied(null), 1400)
     } catch {
-      /* clipboard blocked */
+      setCopied("failed")
+      window.setTimeout(() => setCopied(null), 1400)
     }
   }, [message.content])
 
@@ -105,7 +106,11 @@ export const AnswerMessage = React.memo(function AnswerMessage({ message }: { me
         )}
 
         {message.content && (
-          <div className={cn("loma-prose", message.streaming && "loma-caret")}>
+          <div
+            aria-live={message.streaming ? "off" : undefined}
+            aria-busy={message.streaming || undefined}
+            className={cn("loma-prose", message.streaming && "loma-caret")}
+          >
             <Markdown>{message.content}</Markdown>
           </div>
         )}
@@ -144,15 +149,15 @@ export const AnswerMessage = React.memo(function AnswerMessage({ message }: { me
             <button
               type="button"
               onClick={() => void copy()}
-              aria-label={copied ? "Copied" : "Copy answer"}
+              aria-label={copied ? (copied === "ok" ? "Copied" : "Copy failed") : "Copy answer"}
               className={cn(
                 "flex items-center gap-1.5 rounded-md px-1.5 py-1 font-mono text-[10px] uppercase tracking-[0.1em] transition",
                 "text-loma-faint hover:bg-white/[0.05] hover:text-loma-ink",
-                "opacity-100 sm:opacity-0 sm:group-hover/answer:opacity-100 sm:focus-visible:opacity-100",
+                "opacity-100 [@media(hover:none)]:opacity-100 sm:opacity-0 sm:group-hover/answer:opacity-100 sm:focus-visible:opacity-100",
               )}
             >
-              {copied ? <Check className="size-3 text-loma-ok" /> : <Copy className="size-3" />}
-              {copied ? "copied" : "copy"}
+              {copied === "ok" ? <Check className="size-3 text-loma-ok" /> : copied === "failed" ? <TriangleAlert className="size-3 text-loma-danger" /> : <Copy className="size-3" />}
+              {copied === "ok" ? "copied" : copied === "failed" ? "failed" : "copy"}
             </button>
           </div>
         )}

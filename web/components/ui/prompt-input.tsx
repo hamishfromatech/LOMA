@@ -115,7 +115,7 @@ function PromptInputTextarea({
   disableAutosize = false,
   ...props
 }: PromptInputTextareaProps) {
-  const { value, setValue, maxHeight, onSubmit, disabled, textareaRef } =
+  const { isLoading, value, setValue, maxHeight, onSubmit, disabled, textareaRef } =
     usePromptInput()
 
   const adjustHeight = (el: HTMLTextAreaElement | null) => {
@@ -156,6 +156,12 @@ function PromptInputTextarea({
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     const meta = e.metaKey || e.ctrlKey
+    // While busy the textarea is for composing the NEXT message, not sending:
+    // plain and Cmd+Enter insert a newline, Shift+Enter does too.
+    if (isLoading) {
+      onKeyDown?.(e)
+      return
+    }
     // Cmd+Enter / Ctrl+Enter → send (even with multi-line)
     if (e.key === "Enter" && meta) {
       e.preventDefault()

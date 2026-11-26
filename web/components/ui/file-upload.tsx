@@ -41,16 +41,50 @@ function FileUpload({
   const [isDragging, setIsDragging] = useState(false)
   const dragCounter = useRef(0)
 
+  const matchesAccept = useCallback(
+    (file: File) => {
+      if (!accept) return true
+      // Comma-separated mime types/patterns, e.g. "image/png,image/jpeg,image/webp"
+      const patterns = accept.split(",").map((part) => part.trim().toLowerCase()).filter(Boolean)
+      const type = file.type.toLowerCase()
+      return patterns.some((pattern) => {
+        if (pattern.endsWith("/*")) {
+          const prefix = pattern.slice(0, -2)
+          return type.startsWith(prefix)
+        }
+        return pattern === type
+      })
+    },
+    [accept],
+  )
+
+  const matchesItem = useCallback(
+    (item: DataTransferItem) => {
+      if (!accept) return item.kind === "file"
+      if (item.kind !== "file") return false
+      const type = (item.type || "").toLowerCase()
+      const patterns = accept.split(",").map((part) => part.trim().toLowerCase()).filter(Boolean)
+      return patterns.some((pattern) => {
+        if (pattern.endsWith("/*")) {
+          return type.startsWith(pattern.slice(0, -2))
+        }
+        return pattern === type
+      })
+    },
+    [accept],
+  )
+
   const handleFiles = useCallback(
     (files: FileList) => {
-      const newFiles = Array.from(files)
+      const matching = Array.from(files).filter(matchesAccept)
+      if (matching.length === 0) return
       if (multiple) {
-        onFilesAdded(newFiles)
+        onFilesAdded(matching)
       } else {
-        onFilesAdded(newFiles.slice(0, 1))
+        onFilesAdded(matching.slice(0, 1))
       }
     },
-    [multiple, onFilesAdded]
+    [multiple, matchesAccept, onFilesAdded],
   )
 
   useEffect(() => {
@@ -61,8 +95,14 @@ function FileUpload({
 
     const handleDragIn = (e: DragEvent) => {
       handleDrag(e)
-      dragCounter.current++
-      if (e.dataTransfer?.items.length) setIsDragging(true)
+      // Sniff the payload — accept only when a matching file is present, so
+      // a PDF drop doesn't flash "Drop an image".
+      const items = Array.from(e.dataTransfer?.items ?? [])
+      const matching = items.some((item) => item.kind === "file" && matchesItem(item))
+      if (matching) {
+        dragCounter.current++
+        setIsDragging(true)
+      }
     }
 
     const handleDragOut = (e: DragEvent) => {
@@ -91,7 +131,7 @@ function FileUpload({
       window.removeEventListener("dragover", handleDrag)
       window.removeEventListener("drop", handleDrop)
     }
-  }, [handleFiles, onFilesAdded, multiple])
+  }, [handleFiles, matchesItem])
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files?.length) {

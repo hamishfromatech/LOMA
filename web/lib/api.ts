@@ -29,7 +29,11 @@ export function getLastConversation(): string | null {
 
 export function rememberConversation(id: string): void {
   try {
-    localStorage.setItem(KEY_LAST_CONVERSATION, id)
+    if (id) {
+      localStorage.setItem(KEY_LAST_CONVERSATION, id)
+    } else {
+      localStorage.removeItem(KEY_LAST_CONVERSATION)
+    }
   } catch {
     /* localStorage full or blocked */
   }
@@ -61,15 +65,12 @@ export const API_BASE =
 async function json<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, init)
   if (!response.ok) {
-    try {
-      return (await response.json()) as T
-    } catch {
-      // HTML / traceback: cap ~200 chars instead of rendering raw
-      const detail = await response.text()
-      throw new Error(
-        `${response.status} ${response.statusText}: ${(detail || "").slice(0, 200)}`,
-      )
-    }
+    // Error bodies ({"detail": ...}, {"error": ...}) must not be handed to
+    // callers as success results — a typed cast is not a real guard.
+    const detail = await response.text().catch(() => "")
+    throw new Error(
+      `${response.status} ${response.statusText}: ${detail.slice(0, 200) || "no detail"}`,
+    )
   }
   return (await response.json()) as T
 }
@@ -87,10 +88,6 @@ export function listModels(): Promise<ModelsPayload> {
   return json<ModelsPayload>("/api/models")
 }
 
-export function resetConversation(): Promise<{ ok: boolean }> {
-  return json("/api/reset", { method: "POST" })
-}
-
 export async function transcribe(blob: Blob): Promise<string> {
   const form = new FormData()
   form.append("audio", blob, "clip.webm")
@@ -99,16 +96,6 @@ export async function transcribe(blob: Blob): Promise<string> {
     body: form,
   })
   return result.text
-}
-
-export async function speak(text: string): Promise<Blob> {
-  const response = await fetch(`${API_BASE}/api/speak`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text }),
-  })
-  if (!response.ok) throw new Error("speech failed")
-  return response.blob()
 }
 
 /**
@@ -204,10 +191,6 @@ export function updateSettings(patch: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
   })
-}
-
-export function getMcp(): Promise<McpOverview> {
-  return json<McpOverview>("/api/mcp")
 }
 
 export function reloadMcp(): Promise<McpOverview> {
@@ -331,10 +314,6 @@ export function resetOnboarding(): Promise<OnboardingState> {
 // ---------------------------------------------------------------------------
 // Memory
 // ---------------------------------------------------------------------------
-
-export function getMemory(): Promise<MemoryPayload> {
-  return json<MemoryPayload>("/api/memory")
-}
 
 export function writeMemory(content: string): Promise<MemoryPayload> {
   return json<MemoryPayload>("/api/memory", {

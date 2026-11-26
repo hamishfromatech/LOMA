@@ -76,7 +76,7 @@
   --loma-line-soft: rgba(255, 250, 242, 0.055);
   --loma-ink: #f4efe7;
   --loma-dim: #a9a29a;
-  --loma-faint: #8d857c;
+  --loma-faint: #9b9188;
   --loma-accent: #e3a85c;
   --loma-accent-soft: rgba(227, 168, 92, 0.14);
   --loma-teal: #5fd3c0;
@@ -172,6 +172,8 @@
   line-height: 1.72;
   color: var(--loma-ink);
   letter-spacing: -0.002em;
+  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .loma-prose > * {
@@ -264,7 +266,8 @@
   background: rgba(255, 250, 242, 0.08);
   border: 1px solid var(--loma-line-soft);
   color: #f0d8b4;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .loma-prose pre {
@@ -400,11 +403,18 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .loma-rise,
-  .loma-pop,
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .loma-caret > :last-child::after,
   .loma-breathe,
-  /* Trail the caret behind the last block, not below it. */
-.loma-caret > :last-child::after {
+  .loma-rise,
+  .loma-pop {
     animation: none !important;
   }
 }

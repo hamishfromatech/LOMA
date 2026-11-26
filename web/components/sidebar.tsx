@@ -23,6 +23,11 @@ type Props = {
   onSelect: (id: string) => void
   onDelete: (id: string) => void
   onRename: (id: string, title: string) => void
+  loading?: boolean
+  error?: string | null
+  onRetry?: () => void
+  /** The button that would open the drawer, to return focus to on close. */
+  triggerRef?: React.RefObject<HTMLElement | null>
 }
 
 const ORDER = [
@@ -54,23 +59,64 @@ export function ChatsDrawer({
   onSelect,
   onDelete,
   onRename,
+  loading = false,
+  error = null,
+  onRetry,
+  triggerRef,
 }: Props) {
   const [query, setQuery] = useState("")
   const [renaming, setRenaming] = useState<string | null>(null)
   const [draft, setDraft] = useState("")
   const [confirming, setConfirming] = useState<string | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
+  const asideRef = useRef<HTMLElement>(null)
   const renameRef = useRef<HTMLInputElement>(null)
+  const cancelledRef = useRef(false)
+  const wasOpen = useRef(false)
+
+  // Return focus to the rail control that opened the drawer when it closes.
+  useEffect(() => {
+    if (wasOpen.current && !open) triggerRef?.current?.focus()
+    wasOpen.current = open
+  }, [open, triggerRef])
 
   useEffect(() => {
     if (!open) {
       setRenaming(null)
       setConfirming(null)
       setQuery("")
+      cancelledRef.current = false
       return
     }
     const timer = window.setTimeout(() => searchRef.current?.focus(), 180)
     return () => window.clearTimeout(timer)
+  }, [open])
+
+  // Trap Tab inside the drawer so focus can't escape behind the backdrop.
+  useEffect(() => {
+    if (!open) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return
+      const aside = asideRef.current
+      if (!aside) return
+      const focusable = Array.from(
+        aside.querySelectorAll<HTMLElement>(
+          "button, input, textarea, select, a[href], [tabindex]:not([tabindex='-1'])",
+        ),
+      ).filter((element) => !element.hasAttribute("disabled"))
+      if (focusable.length === 0) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        last.focus()
+        event.preventDefault()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        first.focus()
+        event.preventDefault()
+      }
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
   }, [open])
 
   useEffect(() => {
@@ -98,6 +144,11 @@ export function ChatsDrawer({
   }, [conversations, query])
 
   const commitRename = (id: string) => {
+    if (cancelledRef.current) {
+      setRenaming(null)
+      cancelledRef.current = false
+      return
+    }
     const next = draft.trim()
     if (next) onRename(id, next)
     setRenaming(null)
@@ -114,11 +165,14 @@ export function ChatsDrawer({
       )}
 
       <aside
+        ref={asideRef}
         inert={!open}
         aria-hidden={!open}
         aria-label="Chats"
+        role="dialog"
+        aria-modal={open || undefined}
         className={cn(
-          "fixed inset-y-3 left-[56px] z-40 flex w-[min(300px,calc(100vw-72px))] flex-col overflow-hidden rounded-2xl sm:left-[68px]",
+          "fixed inset-y-3 left-12 z-40 flex w-[min(300px,calc(100vw-72px))] flex-col overflow-hidden rounded-2xl sm:left-[60px]",
           "border border-loma-line bg-loma-surface shadow-[0_30px_80px_-20px_rgba(0,0,0,0.9)]",
           "transition-all duration-200 ease-out",
           open
@@ -134,7 +188,7 @@ export function ChatsDrawer({
           <Button
             variant="ghost"
             size="icon-sm"
-            className="ml-auto size-7 text-loma-faint hover:bg-white/[0.06] hover:text-loma-ink"
+            className="ml-auto size-8 text-loma-faint hover:bg-white/[0.06] hover:text-loma-ink"
             onClick={onClose}
             aria-label="Close chats"
           >
@@ -155,9 +209,10 @@ export function ChatsDrawer({
             />
             {query ? (
               <button
+                type="button"
                 onClick={() => setQuery("")}
                 aria-label="Clear search"
-                className="text-loma-faint transition hover:text-loma-ink"
+                className="grid min-h-[32px] min-w-[32px] place-items-center text-loma-faint transition hover:text-loma-ink"
               >
                 <X className="size-3" />
               </button>
@@ -181,15 +236,49 @@ export function ChatsDrawer({
         </div>
 
         <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
-          {groups.length === 0 && (
+          {loading && (
             <p className="px-3 py-8 text-center text-[12px] text-loma-faint">
-              {query ? `Nothing matches “${query}”.` : "No chats yet."}
+              loading chats…
             </p>
+          )}
+          {error && (
+            <div className="px-3 py-8 text-center">
+              <p className="text-[12px] text-loma-dim">could not load chats</p>
+              {onRetry && (
+                <button
+                  type="button"
+                  onClick={onRetry}
+                  className="mt-3 rounded-md border border-loma-line px-3 py-1.5 text-[11px] text-loma-ink hover:bg-white/[0.06]"
+                >
+                  Retry
+                </button>
+              )}
+            </div>
+          )}
+          {!loading && !error && groups.length === 0 && (
+            <div className="px-3 py-8 text-center">
+              {query ? (
+                <p className="text-[12px] text-loma-faint">
+                  Nothing matches “{query}”.
+                </p>
+              ) : (
+                <>
+                  <p className="text-[12px] text-loma-faint">No chats yet.</p>
+                  <button
+                    type="button"
+                    onClick={onNew}
+                    className="mt-3 rounded-md border border-loma-line px-3 py-1.5 text-[11px] text-loma-ink hover:bg-white/[0.06]"
+                  >
+                    Start a chat
+                  </button>
+                </>
+              )}
+            </div>
           )}
 
           {groups.map((group) => (
             <div key={group.label} className="mb-3">
-              <p className="px-2.5 pb-1 pt-2 font-mono text-[9.5px] uppercase tracking-[0.16em] text-loma-faint/80">
+              <p className="px-2.5 pb-1 pt-2 font-mono text-[9.5px] uppercase tracking-[0.16em] text-loma-faint">
                 {group.label}
               </p>
               <ul className="space-y-0.5">
@@ -218,8 +307,14 @@ export function ChatsDrawer({
                             value={draft}
                             onChange={(event) => setDraft(event.target.value)}
                             onKeyDown={(event) => {
-                              if (event.key === "Enter") commitRename(conversation.id)
-                              if (event.key === "Escape") setRenaming(null)
+                              if (event.key === "Enter") {
+                                cancelledRef.current = false
+                                commitRename(conversation.id)
+                              }
+                              if (event.key === "Escape") {
+                                cancelledRef.current = true
+                                setRenaming(null)
+                              }
                             }}
                             onBlur={() => commitRename(conversation.id)}
                             aria-label="Chat title"
@@ -248,42 +343,46 @@ export function ChatsDrawer({
                         {isConfirming ? (
                           <span className="flex shrink-0 items-center gap-0.5">
                             <button
+                              type="button"
                               onClick={() => onDelete(conversation.id)}
                               aria-label={`Confirm delete ${conversation.title}`}
-                              className="rounded p-1 text-loma-danger hover:bg-loma-danger/10"
+                              className="grid min-h-[32px] min-w-[32px] place-items-center rounded text-loma-danger hover:bg-loma-danger/10 focus-visible:bg-loma-danger/10"
                             >
-                              <Check className="size-3.5" />
+                              <Trash2 className="size-3.5" />
                             </button>
                             <button
+                              type="button"
                               onClick={() => setConfirming(null)}
                               aria-label="Keep chat"
-                              className="rounded p-1 text-loma-faint hover:bg-white/[0.06] hover:text-loma-ink"
+                              className="grid min-h-[32px] min-w-[32px] place-items-center rounded text-loma-faint hover:bg-white/[0.06] hover:text-loma-ink focus-visible:bg-white/[0.06]"
                             >
-                              <X className="size-3.5" />
+                              <Check className="size-3.5" />
                             </button>
                           </span>
                         ) : (
                           !isRenaming && (
                             <span
                               className={cn(
-                                "flex shrink-0 items-center gap-0.5 transition sm:opacity-0 sm:group-hover/row:opacity-100",
+                                "flex shrink-0 items-center gap-0.5 transition sm:opacity-0 sm:group-hover/row:opacity-100 sm:focus-within:opacity-100",
                                 active && "sm:opacity-100",
                               )}
                             >
                               <button
+                                type="button"
                                 onClick={() => {
                                   setRenaming(conversation.id)
                                   setDraft(conversation.title)
                                 }}
                                 aria-label={`Rename ${conversation.title}`}
-                                className="rounded p-1 text-loma-faint hover:bg-white/[0.06] hover:text-loma-ink"
+                                className="grid min-h-[32px] min-w-[32px] place-items-center rounded text-loma-faint hover:bg-white/[0.06] hover:text-loma-ink focus-visible:bg-white/[0.06]"
                               >
                                 <Pencil className="size-3" />
                               </button>
                               <button
+                                type="button"
                                 onClick={() => setConfirming(conversation.id)}
                                 aria-label={`Delete ${conversation.title}`}
-                                className="rounded p-1 text-loma-faint hover:bg-white/[0.06] hover:text-loma-danger"
+                                className="grid min-h-[32px] min-w-[32px] place-items-center rounded text-loma-faint hover:bg-white/[0.06] hover:text-loma-danger focus-visible:bg-white/[0.06]"
                               >
                                 <Trash2 className="size-3" />
                               </button>

@@ -9,27 +9,35 @@ type Props = {
   onNew: () => void
   onToggleChats: () => void
   chatsOpen: boolean
+  onboardingName?: string
+  chatsButtonRef?: React.RefObject<HTMLButtonElement | null>
   className?: string
 }
 
 function RailButton({
   label,
   active,
+  activeAsToggle,
   onClick,
   children,
+  buttonRef,
 }: {
   label: string
   active?: boolean
+  activeAsToggle?: boolean
   onClick?: () => void
   children: React.ReactNode
+  buttonRef?: React.RefObject<HTMLButtonElement | null>
 }) {
   return (
     <button
       type="button"
+      ref={buttonRef}
       onClick={onClick}
       aria-label={label}
       title={label}
-      aria-pressed={active}
+      aria-pressed={activeAsToggle ? active : undefined}
+      aria-current={activeAsToggle ? undefined : active}
       className={cn(
         "grid size-9 place-items-center rounded-[10px] transition-colors duration-150",
         active
@@ -43,7 +51,14 @@ function RailButton({
 }
 
 /** The narrow rail on the far left — mark, new chat, chats, settings. */
-export function IconRail({ onNew, onToggleChats, chatsOpen, className }: Props) {
+export function IconRail({
+  onNew,
+  onToggleChats,
+  chatsOpen,
+  onboardingName,
+  chatsButtonRef,
+  className,
+}: Props) {
   return (
     <div
       className={cn(
@@ -59,7 +74,13 @@ export function IconRail({ onNew, onToggleChats, chatsOpen, className }: Props) 
         <SquarePen className="size-[17px]" strokeWidth={1.8} />
       </RailButton>
 
-      <RailButton label="Chats (⌘K)" active={chatsOpen} onClick={onToggleChats}>
+      <RailButton
+        label="Chats (⌘K)"
+        active={chatsOpen}
+        activeAsToggle
+        onClick={onToggleChats}
+        buttonRef={chatsButtonRef}
+      >
         <PanelLeft className="size-[17px]" strokeWidth={1.8} />
       </RailButton>
 
@@ -75,9 +96,10 @@ export function IconRail({ onNew, onToggleChats, chatsOpen, className }: Props) 
         </Link>
         <div
           className="grid size-7 place-items-center rounded-full border border-loma-line bg-white/[0.05] text-[10px] font-medium text-loma-dim"
-          title="Local account"
+          title={onboardingName ? `Signed in as ${onboardingName}` : "Local account"}
+          aria-label={onboardingName ? `Signed in as ${onboardingName}` : "Local account"}
         >
-          H
+          {onboardingName ? onboardingName.trim().charAt(0).toUpperCase() : "H"}
         </div>
       </div>
     </div>

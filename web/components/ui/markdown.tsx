@@ -23,11 +23,37 @@ function extractLanguage(className?: string): string {
   return match ? match[1] : "plaintext"
 }
 
+const externalLink = ({
+  children,
+  href,
+  ...props
+}: React.ComponentProps<"a"> & { node?: unknown }) => {
+  if (typeof href === "string" && /^(https?|mailto):/.test(href)) {
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        {...props}
+      >
+        {children}
+      </a>
+    )
+  }
+  return <a href={href} {...props}>{children}</a>
+}
+
 const INITIAL_COMPONENTS: Partial<Components> = {
+  a: externalLink,
   code: function CodeComponent({ className, children, ...props }) {
+    // Fenced blocks carry a language class; inline code has none. The position
+    // heuristic cannot tell a single-line fence from inline code, so it is
+    // only used as a fallback.
+    const isFenced = className?.includes("language-")
     const isInline =
-      !props.node?.position?.start.line ||
-      props.node?.position?.start.line === props.node?.position?.end.line
+      !isFenced &&
+      (!props.node?.position?.start.line ||
+        props.node?.position?.start.line === props.node?.position?.end.line)
 
     if (isInline) {
       return (

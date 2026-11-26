@@ -134,7 +134,7 @@ function ToolFrame({
           <div className="space-y-2 px-3 pb-2.5">
             {Object.keys(tool.arguments).length > 0 && (
               <div>
-                <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.14em] text-loma-faint/80">
+                <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.14em] text-loma-faint">
                   arguments
                 </p>
                 <pre className="overflow-x-auto rounded-md bg-black/30 px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-loma-dim">
@@ -144,7 +144,7 @@ function ToolFrame({
             )}
             {tool.result && (
               <div>
-                <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.14em] text-loma-faint/80">
+                <p className="mb-1 font-mono text-[10px] uppercase tracking-[0.14em] text-loma-faint">
                   result
                 </p>
                 <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-black/30 px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-loma-ink/85">

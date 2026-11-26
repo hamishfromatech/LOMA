@@ -31,6 +31,12 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       suppressHydrationWarning
     >
       <body className="min-h-full bg-background text-foreground">
+        <a
+          href="#loma-main"
+          className="fixed left-3 top-3 z-[100] -translate-y-[4rem] rounded-full bg-loma-ink px-4 py-2 font-mono text-xs text-loma-bg transition-transform focus-visible:translate-y-0"
+        >
+          Skip to content
+        </a>
         <TooltipProvider delay={200}>{children}</TooltipProvider>
       </body>
     </html>
